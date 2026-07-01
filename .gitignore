@@ -1,0 +1,6 @@
+# Your personal financial data — never pushed to GitHub.
+data.js
+my-data.json
+wealth-backup-*.json
+
+.DS_Store

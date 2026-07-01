@@ -1,0 +1,116 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#0a0b0f">
+  <meta name="robots" content="noindex, nofollow">
+  <title>Wealth</title>
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>💎</text></svg>">
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+
+  <!-- Passcode gate -->
+  <div id="gate">
+    <div class="gate-card">
+      <div class="gate-logo">💎</div>
+      <h1 id="gateTitle">Enter passcode</h1>
+      <p id="gateSub">Welcome back.</p>
+      <input id="gateInput" type="password" inputmode="numeric" autocomplete="off" placeholder="••••••">
+      <div class="gate-err" id="gateErr"></div>
+      <button class="btn primary" id="gateBtn" style="width:100%;justify-content:center;margin-top:16px">Unlock</button>
+      <div class="gate-hint">Light client-side lock. See README for real private hosting.</div>
+    </div>
+  </div>
+
+  <!-- App -->
+  <div id="app" class="hidden">
+    <header class="top">
+      <div class="brand">
+        <div class="mark">💎</div>
+        <div><div class="title">Wealth</div><div class="sub">live portfolio &amp; P&amp;L</div></div>
+      </div>
+      <div class="controls">
+        <div class="seg" id="ccyToggle">
+          <button data-ccy="USD" class="active">USD</button>
+          <button data-ccy="EUR">EUR</button>
+        </div>
+        <button class="btn icon" id="refreshBtn" title="Refresh live prices"></button>
+        <button class="btn primary" id="addBtn"></button>
+        <button class="btn icon" id="settingsBtn" title="Settings"></button>
+        <button class="btn icon" id="lockBtn" title="Lock"></button>
+      </div>
+      <div class="status-line" id="statusLine"><span class="dot"></span> Loading…</div>
+    </header>
+
+    <main class="wrap">
+      <section class="kpis" id="kpis"></section>
+
+      <div class="grid-2">
+        <div class="panel">
+          <div class="panel-head"><h2>Allocation</h2></div>
+          <div id="donut"></div>
+          <div class="alloc-bars" id="allocBars" style="margin-top:18px"></div>
+        </div>
+        <div class="panel" id="sparkPanel">
+          <div class="spark-wrap">
+            <div class="spark-meta" id="sparkMeta"></div>
+            <div id="sparkSvg"></div>
+          </div>
+        </div>
+      </div>
+
+      <div id="holdings"></div>
+
+      <div class="panel">
+        <div class="panel-head"><h2>Closed positions <span class="tag">realized</span></h2></div>
+        <div class="table-scroll"><table class="tbl">
+          <thead><tr id="closedHead"></tr></thead>
+          <tbody id="closedBody"></tbody>
+          <tfoot id="closedFoot"></tfoot>
+        </table></div>
+      </div>
+
+      <div class="panel">
+        <div class="panel-head"><h2>Trade log <span class="tag"><span id="logCount">0</span> trades</span></h2>
+          <button class="btn" id="addBtn2" onclick="tradeModal()" style="display:none"></button></div>
+        <div class="table-scroll"><table class="tbl">
+          <thead><tr>
+            <th class="no-sort">Date</th>
+            <th class="no-sort" style="text-align:left">Asset</th>
+            <th class="no-sort" style="text-align:left">Side</th>
+            <th class="no-sort" style="text-align:left">Venue</th>
+            <th class="no-sort">Qty</th>
+            <th class="no-sort">Price</th>
+            <th class="no-sort">Total (USD)</th>
+            <th class="no-sort"></th>
+          </tr></thead>
+          <tbody id="logBody"></tbody>
+        </table></div>
+      </div>
+
+      <footer class="foot">
+        Prices: crypto via CoinGecko · stocks via Finnhub · FX via Frankfurter.
+        Data stored locally in your browser. Cost basis uses FIFO (fees included).
+      </footer>
+    </main>
+  </div>
+
+  <script src="data.js"></script>
+  <script src="app.js"></script>
+  <script>
+    // inject header icons after app.js defines ICON
+    window.addEventListener("DOMContentLoaded", () => {
+      const set = () => {
+        if (typeof ICON === "undefined") return setTimeout(set, 30);
+        document.getElementById("refreshBtn").innerHTML = ICON.refresh;
+        document.getElementById("addBtn").innerHTML = ICON.plus + " Add trade";
+        document.getElementById("settingsBtn").innerHTML = ICON.gear;
+        document.getElementById("lockBtn").innerHTML = ICON.lock;
+      };
+      set();
+    });
+  </script>
+</body>
+</html>
