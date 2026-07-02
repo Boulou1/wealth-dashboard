@@ -388,9 +388,7 @@ function refreshStatusText() {
 function render() {
   const map = buildPriceMap();
   const P = computePortfolio(map);
-  recordHistory(P.totals.mv + totalCashUSD(), P.totals.upl + P.totals.realizedAll);
   renderKPIs(P);
-  renderPerformance(P);
   renderCash(P);
   renderAllocation(P);
   renderSparkline();
@@ -398,49 +396,6 @@ function render() {
   renderClosed(P);
   renderLog();
   refreshStatusText();
-}
-
-const _today = () => new Date().toISOString().slice(0, 10);
-// One point per day: v = total value, p = total P&L (realized + unrealized). Intraday updates overwrite today's.
-function recordHistory(value, pnl) {
-  STATE.valueHistory = STATE.valueHistory || [];
-  const h = STATE.valueHistory, last = h[h.length - 1], today = _today();
-  if (last && last.d === today) {
-    let changed = false;
-    if (Math.abs((last.v || 0) - value) > 0.5) { last.v = value; changed = true; }
-    if (last.p == null || Math.abs(last.p - pnl) > 0.5) { last.p = pnl; changed = true; }
-    if (changed) saveLocal();
-  } else { h.push({ d: today, v: value, p: pnl }); saveLocal(); }
-}
-function renderPerformance(P) {
-  const box = $("#perf"); if (!box) return;
-  // Period P&L = change in TOTAL P&L (realized + unrealized), so deposits/new buys don't inflate it.
-  // Needs P&L recorded at past dates → fills in as the app logs a point each day (no historical prices to backfill).
-  const hist = (STATE.valueHistory || []).filter(pt => pt.p != null).sort((a, b) => a.d < b.d ? -1 : 1);
-  const pnlNow = P.totals.upl + P.totals.realizedAll;
-  const today = _today(), t = new Date();
-  const daysAgo = n => new Date(t.getTime() - n * 864e5).toISOString().slice(0, 10);
-  const dayDiff = (a, b) => Math.round((new Date(b) - new Date(a)) / 864e5);
-  const periods = [
-    { key: "1W", target: daysAgo(7), maxStale: 16 },
-    { key: "1M", target: daysAgo(30), maxStale: 50 },
-    { key: "YTD", target: `${t.getFullYear()}-01-01`, maxStale: null },
-    { key: "1Y", target: daysAgo(365), maxStale: null },
-  ];
-  box.innerHTML = periods.map(pd => {
-    let ref = null;
-    for (const pt of hist) { if (pt.d <= pd.target) ref = pt; else break; }
-    if (!ref && hist.length) ref = hist[0];                 // long periods fall back to earliest P&L point
-    let body;
-    if (!ref || ref.d === today || (pd.maxStale && dayDiff(ref.d, today) > pd.maxStale)) {
-      body = `<div class="pv muted">—</div><div class="ps muted">building…</div>`;
-    } else {
-      const abs = pnlNow - ref.p, c = cls(abs);
-      body = `<div class="pv ${c}">${money(abs, { sign: true })}</div>
-              <div class="ps">since ${ref.d}</div>`;
-    }
-    return `<div class="perf-card"><div class="pl">${pd.key}</div>${body}</div>`;
-  }).join("");
 }
 
 function renderKPIs(P) {
@@ -1284,11 +1239,6 @@ function boot() {
   STATE.manualPrices = STATE.manualPrices || {};
   STATE.cash = STATE.cash || [];
   STATE.assetMeta = STATE.assetMeta || {};
-  STATE.valueHistory = STATE.valueHistory || [];
-  if (!STATE.valueHistory.length && (STATE.snapshots || []).length) {   // seed from net-worth snapshots
-    STATE.valueHistory = STATE.snapshots.filter(s => s.navUSD != null)
-      .map(s => ({ d: s.date, v: s.navUSD })).sort((a, b) => a.d < b.d ? -1 : 1);
-  }
   saveState();
   wireHeader();
   render();
