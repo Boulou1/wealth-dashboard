@@ -1094,14 +1094,17 @@ function csvCash() {
 async function ghPutFile(path, contentStr, message) {
   const branch = ghCfg().branch || "main";
   let sha = await ghSha(path, branch);
-  for (let attempt = 0; attempt < 3; attempt++) {
+  for (let attempt = 0; attempt < 4; attempt++) {
     try {
       await ghApi("PUT", `contents/${encodeURIComponent(path)}`, { message, content: b64enc(contentStr), sha: sha || undefined, branch });
       return;
     } catch (e) {
       const msg = String(e.message);
-      // 409 (sha out of date) or 422 (sha required) → refetch current sha and retry
-      if ((msg.startsWith("409") || msg.startsWith("422")) && attempt < 2) { sha = await ghSha(path, branch); continue; }
+      // On a conflict, GitHub reports the current sha in the message ("... does not match <sha>").
+      // Use it directly (most reliable), else refetch. Then retry.
+      const m = msg.match(/does not match ([0-9a-f]{7,40})/);
+      if (m && attempt < 3) { sha = m[1]; continue; }
+      if ((msg.startsWith("409") || msg.startsWith("422")) && attempt < 3) { sha = await ghSha(path, branch); continue; }
       throw e;
     }
   }
