@@ -365,7 +365,7 @@ async function refreshPrices() {
   }
 
   STATE.lastRefresh = now;
-  saveState();
+  saveLocal();   // local only — live prices aren't in the backup, so don't push (and don't race) on every refresh
   render();
   if (btn) btn.disabled = false;
   if (errors.length) toast(`Updated ${liveCount} prices · missing: ${errors.join(", ")}`, true);
@@ -1097,17 +1097,19 @@ function csvCash() {
 async function ghPutFile(path, contentStr, message) {
   const branch = ghCfg().branch || "main";
   let sha = await ghSha(path, branch);
-  for (let attempt = 0; attempt < 4; attempt++) {
+  for (let attempt = 0; attempt < 6; attempt++) {
     try {
       await ghApi("PUT", `contents/${encodeURIComponent(path)}`, { message, content: b64enc(contentStr), sha: sha || undefined, branch });
       return;
     } catch (e) {
       const msg = String(e.message);
       // On a conflict, GitHub reports the current sha in the message ("... does not match <sha>").
-      // Use it directly (most reliable), else refetch. Then retry.
-      const m = msg.match(/does not match ([0-9a-f]{7,40})/);
-      if (m && attempt < 3) { sha = m[1]; continue; }
-      if ((msg.startsWith("409") || msg.startsWith("422")) && attempt < 3) { sha = await ghSha(path, branch); continue; }
+      if ((msg.startsWith("409") || msg.startsWith("422")) && attempt < 5) {
+        const m = msg.match(/does not match ([0-9a-f]{7,40})/);
+        sha = m ? m[1] : await ghSha(path, branch);
+        await new Promise(r => setTimeout(r, 400 * (attempt + 1)));   // let a concurrent writer settle
+        continue;
+      }
       throw e;
     }
   }
@@ -1144,7 +1146,7 @@ async function ghRestore() {
     if (j.manualPrices) STATE.manualPrices = j.manualPrices;
     if (j.settings) { STATE.settings.finnhubKey = j.settings.finnhubKey || STATE.settings.finnhubKey; STATE.settings.multipliers = j.settings.multipliers || STATE.settings.multipliers; }
     if (j.fxEURUSD) STATE.fxEURUSD = j.fxEURUSD;
-    saveState(); render(); refreshPrices();
+    saveLocal(); render(); refreshPrices();   // just pulled from the repo — don't immediately push it back
     toast(`Restored ${STATE.trades.length} trades from GitHub ✓`);
   } catch (e) { toast("Restore failed: " + e.message, true); }
 }
@@ -1239,7 +1241,7 @@ function boot() {
   STATE.manualPrices = STATE.manualPrices || {};
   STATE.cash = STATE.cash || [];
   STATE.assetMeta = STATE.assetMeta || {};
-  saveState();
+  saveLocal();   // migrations shouldn't trigger a backup on every load
   wireHeader();
   render();
   refreshPrices();   // fetch live on load
