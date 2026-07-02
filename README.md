@@ -1,5 +1,11 @@
 # 💎 Wealth Dashboard
 
+### ▶️ Open the app: **https://boulou1.github.io/wealth-dashboard/**
+
+Enter your passcode, then ⚙ Settings → paste your GitHub token once to sync your data.
+
+---
+
 A private, single-page portfolio tracker. Log your trades, and it computes live
 P&L using a FIFO cost-basis engine — separating **stocks** and **crypto**, with
 open holdings, closed (realized) positions, allocation charts and a net-worth
