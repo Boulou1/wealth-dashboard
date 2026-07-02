@@ -281,7 +281,7 @@ footer.foot { text-align: center; color: var(--faint); font-size: .74rem; margin
 footer.foot a { color: var(--muted); }
 
 /* ---------- Performance strip (1W / 1M / YTD / 1Y) ---------- */
-.perf-strip { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; margin-bottom: 20px; }
+.perf-strip { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; margin: 22px 0; }
 .perf-card { background: var(--surface); border: 1px solid var(--border); border-radius: 14px; padding: 14px 16px; }
 .perf-card .pl { font-size: .72rem; font-weight: 700; letter-spacing: .06em; color: var(--muted); }
 .perf-card .pv { font-size: 1.4rem; font-weight: 750; letter-spacing: -.02em; margin-top: 4px; }
