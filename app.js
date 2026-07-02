@@ -388,7 +388,7 @@ function refreshStatusText() {
 function render() {
   const map = buildPriceMap();
   const P = computePortfolio(map);
-  recordValueHistory(P.totals.mv + totalCashUSD());
+  recordHistory(P.totals.mv + totalCashUSD(), P.totals.upl + P.totals.realizedAll);
   renderKPIs(P);
   renderPerformance(P);
   renderCash(P);
@@ -401,24 +401,25 @@ function render() {
 }
 
 const _today = () => new Date().toISOString().slice(0, 10);
-function recordValueHistory(v) {   // one point per day; intraday updates overwrite today's
-  if (!(v > 0)) return;
+// One point per day: v = total value, p = total P&L (realized + unrealized). Intraday updates overwrite today's.
+function recordHistory(value, pnl) {
   STATE.valueHistory = STATE.valueHistory || [];
   const h = STATE.valueHistory, last = h[h.length - 1], today = _today();
-  if (last && last.d === today) { if (Math.abs(last.v - v) > 0.5) { last.v = v; saveLocal(); } }
-  else { h.push({ d: today, v }); saveLocal(); }
-}
-function valueAtOrBefore(dateStr) {
-  let chosen = null;
-  for (const p of (STATE.valueHistory || [])) { if (p.d <= dateStr) chosen = p; else break; }
-  return chosen;
+  if (last && last.d === today) {
+    let changed = false;
+    if (Math.abs((last.v || 0) - value) > 0.5) { last.v = value; changed = true; }
+    if (last.p == null || Math.abs(last.p - pnl) > 0.5) { last.p = pnl; changed = true; }
+    if (changed) saveLocal();
+  } else { h.push({ d: today, v: value, p: pnl }); saveLocal(); }
 }
 function renderPerformance(P) {
   const box = $("#perf"); if (!box) return;
-  const h = (STATE.valueHistory || []).slice().sort((a, b) => a.d < b.d ? -1 : 1);
-  const now = P.totals.mv + totalCashUSD();
-  const t = new Date(), iso = d => new Date(d).toISOString().slice(0, 10);
-  const daysAgo = n => iso(t.getTime() - n * 864e5);
+  // Period P&L = change in TOTAL P&L (realized + unrealized), so deposits/new buys don't inflate it.
+  // Needs P&L recorded at past dates → fills in as the app logs a point each day (no historical prices to backfill).
+  const hist = (STATE.valueHistory || []).filter(pt => pt.p != null).sort((a, b) => a.d < b.d ? -1 : 1);
+  const pnlNow = P.totals.upl + P.totals.realizedAll;
+  const today = _today(), t = new Date();
+  const daysAgo = n => new Date(t.getTime() - n * 864e5).toISOString().slice(0, 10);
   const dayDiff = (a, b) => Math.round((new Date(b) - new Date(a)) / 864e5);
   const periods = [
     { key: "1W", target: daysAgo(7), maxStale: 16 },
@@ -427,15 +428,16 @@ function renderPerformance(P) {
     { key: "1Y", target: daysAgo(365), maxStale: null },
   ];
   box.innerHTML = periods.map(pd => {
-    let ref = valueAtOrBefore(pd.target);
-    if (!ref && h.length) ref = h[0];                       // long periods fall back to earliest point
+    let ref = null;
+    for (const pt of hist) { if (pt.d <= pd.target) ref = pt; else break; }
+    if (!ref && hist.length) ref = hist[0];                 // long periods fall back to earliest P&L point
     let body;
-    if (!ref || (pd.maxStale && dayDiff(ref.d, _today()) > pd.maxStale)) {
+    if (!ref || ref.d === today || (pd.maxStale && dayDiff(ref.d, today) > pd.maxStale)) {
       body = `<div class="pv muted">—</div><div class="ps muted">building…</div>`;
     } else {
-      const abs = now - ref.v, pct = ref.v ? abs / ref.v : 0, c = cls(abs);
-      body = `<div class="pv ${c}">${pct >= 0 ? "+" : ""}${(pct * 100).toFixed(1)}%</div>
-              <div class="ps"><span class="${c}">${money(abs, { sign: true })}</span> · since ${ref.d}</div>`;
+      const abs = pnlNow - ref.p, c = cls(abs);
+      body = `<div class="pv ${c}">${money(abs, { sign: true })}</div>
+              <div class="ps">since ${ref.d}</div>`;
     }
     return `<div class="perf-card"><div class="pl">${pd.key}</div>${body}</div>`;
   }).join("");
