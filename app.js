@@ -74,8 +74,11 @@ function loadState() {
   } catch (e) {}
   return null;
 }
-function saveState() {
+function saveLocal() {   // localStorage only (no GitHub push) — used for the daily value snapshot
   try { localStorage.setItem(LS_KEY, JSON.stringify(STATE)); } catch (e) {}
+}
+function saveState() {
+  saveLocal();
   if (typeof ghAutoBackup === "function") ghAutoBackup();   // debounced push to private GitHub, if enabled
 }
 
@@ -385,7 +388,9 @@ function refreshStatusText() {
 function render() {
   const map = buildPriceMap();
   const P = computePortfolio(map);
+  recordValueHistory(P.totals.mv + totalCashUSD());
   renderKPIs(P);
+  renderPerformance(P);
   renderCash(P);
   renderAllocation(P);
   renderSparkline();
@@ -393,6 +398,47 @@ function render() {
   renderClosed(P);
   renderLog();
   refreshStatusText();
+}
+
+const _today = () => new Date().toISOString().slice(0, 10);
+function recordValueHistory(v) {   // one point per day; intraday updates overwrite today's
+  if (!(v > 0)) return;
+  STATE.valueHistory = STATE.valueHistory || [];
+  const h = STATE.valueHistory, last = h[h.length - 1], today = _today();
+  if (last && last.d === today) { if (Math.abs(last.v - v) > 0.5) { last.v = v; saveLocal(); } }
+  else { h.push({ d: today, v }); saveLocal(); }
+}
+function valueAtOrBefore(dateStr) {
+  let chosen = null;
+  for (const p of (STATE.valueHistory || [])) { if (p.d <= dateStr) chosen = p; else break; }
+  return chosen;
+}
+function renderPerformance(P) {
+  const box = $("#perf"); if (!box) return;
+  const h = (STATE.valueHistory || []).slice().sort((a, b) => a.d < b.d ? -1 : 1);
+  const now = P.totals.mv + totalCashUSD();
+  const t = new Date(), iso = d => new Date(d).toISOString().slice(0, 10);
+  const daysAgo = n => iso(t.getTime() - n * 864e5);
+  const dayDiff = (a, b) => Math.round((new Date(b) - new Date(a)) / 864e5);
+  const periods = [
+    { key: "1W", target: daysAgo(7), maxStale: 16 },
+    { key: "1M", target: daysAgo(30), maxStale: 50 },
+    { key: "YTD", target: `${t.getFullYear()}-01-01`, maxStale: null },
+    { key: "1Y", target: daysAgo(365), maxStale: null },
+  ];
+  box.innerHTML = periods.map(pd => {
+    let ref = valueAtOrBefore(pd.target);
+    if (!ref && h.length) ref = h[0];                       // long periods fall back to earliest point
+    let body;
+    if (!ref || (pd.maxStale && dayDiff(ref.d, _today()) > pd.maxStale)) {
+      body = `<div class="pv muted">—</div><div class="ps muted">building…</div>`;
+    } else {
+      const abs = now - ref.v, pct = ref.v ? abs / ref.v : 0, c = cls(abs);
+      body = `<div class="pv ${c}">${pct >= 0 ? "+" : ""}${(pct * 100).toFixed(1)}%</div>
+              <div class="ps"><span class="${c}">${money(abs, { sign: true })}</span> · since ${ref.d}</div>`;
+    }
+    return `<div class="perf-card"><div class="pl">${pd.key}</div>${body}</div>`;
+  }).join("");
 }
 
 function renderKPIs(P) {
@@ -1236,6 +1282,11 @@ function boot() {
   STATE.manualPrices = STATE.manualPrices || {};
   STATE.cash = STATE.cash || [];
   STATE.assetMeta = STATE.assetMeta || {};
+  STATE.valueHistory = STATE.valueHistory || [];
+  if (!STATE.valueHistory.length && (STATE.snapshots || []).length) {   // seed from net-worth snapshots
+    STATE.valueHistory = STATE.snapshots.filter(s => s.navUSD != null)
+      .map(s => ({ d: s.date, v: s.navUSD })).sort((a, b) => a.d < b.d ? -1 : 1);
+  }
   saveState();
   wireHeader();
   render();
