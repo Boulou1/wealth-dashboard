@@ -15,7 +15,7 @@ const ASSET_META = {
   "GRAB": { cls: "stock", src: "finnhub", sym: "GRAB" },
   "Nebius Group (A)": { cls: "stock", src: "finnhub", sym: "NBIS" },
   "AVGO": { cls: "stock", src: "finnhub", sym: "AVGO" },
-  "NOW": { cls: "stock", src: "finnhub", sym: "NOW" },
+  "NOW": { cls: "stock", src: "mexc", sym: "NOWONUSDT" },  // tokenized on MEXC; price used as-is (~528)
   "PYPL": { cls: "stock", src: "finnhub", sym: "PYPL" },
   "HOOD": { cls: "stock", src: "finnhub", sym: "HOOD" },
   "SOFI": { cls: "stock", src: "finnhub", sym: "SOFI" },
@@ -25,14 +25,22 @@ const ASSET_META = {
   "SBET": { cls: "stock", src: "finnhub", sym: "SBET" },
   "Zeta Global Holdings": { cls: "stock", src: "finnhub", sym: "ZETA" },
   "Corning": { cls: "stock", src: "finnhub", sym: "GLW" },
-  "ENHA": { cls: "stock", src: "manual" },
+  "ENHA": { cls: "stock", src: "finnhub", sym: "ENHA" },  // Enhanced Group Inc. (NYSE: ENHA)
   "FLOWDESK": { cls: "stock", src: "manual" },
   "Air Liquide": { cls: "stock", src: "manual" },
   "S&P 500 EUR (Acc)": { cls: "stock", src: "manual" },
   "MSCI Emerging Asia PEA ESG Leaders EUR (Acc)": { cls: "stock", src: "manual" },
 };
 function metaFor(asset) {
-  return ASSET_META[asset] || { cls: "stock", src: "manual" };
+  const base = ASSET_META[asset] || { cls: "stock", src: "manual" };
+  const u = (typeof STATE !== "undefined" && STATE && STATE.assetMeta) ? STATE.assetMeta[asset] : null;
+  return u ? { ...base, ...u } : base;   // user registry (new/edited assets) overrides built-ins
+}
+// Price multiplier (user override wins over the config default)
+function multFor(asset) {
+  const o = STATE && STATE.settings && STATE.settings.multipliers;
+  if (o && o[asset] != null && !isNaN(o[asset])) return Number(o[asset]);
+  return metaFor(asset).mult || 1;
 }
 
 const LS_KEY = "wealth_state_v1";
@@ -50,8 +58,10 @@ function defaultState() {
     snapshots: seed.snapshots ? structuredClone(seed.snapshots) : [],
     manualPrices: seed.manualPrices ? { ...seed.manualPrices } : {},
     livePrices: {},                        // asset -> {price, changePct, prevClose, ts}
+    cash: [],                              // ledger: {date, ccy, amount(signed), kind, note, tradeId?, grp?}
+    assetMeta: {},                         // user asset registry: asset -> {cls, src, sym}
     fxEURUSD: seed.fxEURUSD || 1.10,
-    settings: { finnhubKey: "" },
+    settings: { finnhubKey: "", multipliers: {} },
   };
 }
 function loadState() {
@@ -63,6 +73,7 @@ function loadState() {
 }
 function saveState() {
   try { localStorage.setItem(LS_KEY, JSON.stringify(STATE)); } catch (e) {}
+  if (typeof ghAutoBackup === "function") ghAutoBackup();   // debounced push to private GitHub, if enabled
 }
 
 /* ============================ Utils ============================ */
@@ -78,6 +89,37 @@ async function sha256(str) {
 const FX = () => STATE.fxEURUSD || 1.10;
 const toCcy = (usd) => VIEW.ccy === "EUR" ? usd / FX() : usd;    // base is USD
 const SYM = () => VIEW.ccy === "EUR" ? "€" : "$";
+
+/* ---- Cash ledger (base = USD; USDT pegged 1:1 to USD) ---- */
+const CCYS = ["USD", "EUR", "USDT", "USDC"];
+const ccySym = (c) => c === "EUR" ? "€" : c === "USDT" ? "₮" : "$";
+const ccyToUSD = (amount, ccy) => ccy === "EUR" ? amount * FX() : amount;   // USD, USDT, USDC ≈ 1
+function cashBalances() {
+  const b = {}; CCYS.forEach(c => b[c] = 0);
+  for (const e of (STATE.cash || [])) b[e.ccy] = (b[e.ccy] || 0) + e.amount;
+  return b;
+}
+const totalCashUSD = () => { const b = cashBalances(); return Object.keys(b).reduce((s, c) => s + ccyToUSD(b[c], c), 0); };
+const uid = () => "t" + Date.now().toString(36) + Math.random().toString(36).slice(2, 7);
+function nativeTotal(t) {   // cost/proceeds in the trade's own currency, incl. fee
+  const gross = Math.abs(t.qty) * t.price;
+  return String(t.side).toLowerCase() === "buy" ? gross + (t.fee || 0) : gross - (t.fee || 0);
+}
+function syncTradeCash(trade) {   // create/replace the cash movement linked to a trade
+  STATE.cash = (STATE.cash || []).filter(e => e.tradeId !== trade.id);
+  if (trade.settle) {
+    const isBuy = String(trade.side).toLowerCase() === "buy";
+    STATE.cash.push({
+      date: trade.date, ccy: trade.ccy, amount: nativeTotal(trade) * (isBuy ? -1 : 1),
+      kind: isBuy ? "buy" : "sell", note: `${trade.side} ${fmtQty(Math.abs(trade.qty))} ${trade.asset}`,
+      tradeId: trade.id,
+    });
+  }
+}
+function moneyIn(amount, ccy, dp = 2) {   // format an amount in a specific currency
+  const neg = amount < 0;
+  return (neg ? "-" : "") + ccySym(ccy) + Math.abs(amount).toLocaleString("en-US", { minimumFractionDigits: dp, maximumFractionDigits: dp });
+}
 
 function money(usd, opts = {}) {
   if (usd == null || isNaN(usd)) return "—";
@@ -110,9 +152,13 @@ function toast(msg, isErr = false) {
   clearTimeout(t._t); t._t = setTimeout(() => t.className = "toast", 2600);
 }
 const initials = (name) => {
+  const n = String(name).trim();
+  if (/^[A-Za-z0-9.]{1,5}$/.test(n)) return n.toUpperCase();          // already a ticker: NOW, COIN, BTC
   const m = metaFor(name);
-  if (m.sym) return m.sym.slice(0, 4);
-  return name.replace(/[^A-Za-z0-9 ]/g, "").split(" ").map(w => w[0]).join("").slice(0, 4).toUpperCase() || name.slice(0, 3).toUpperCase();
+  if (m.sym) return m.sym.replace(/USDT$|USD$/, "").slice(0, 4);       // pair symbol → strip quote ccy
+  const words = n.replace(/[^A-Za-z0-9 ]/g, "").split(/\s+/).filter(Boolean);
+  if (words.length === 1) return words[0].slice(0, 4).toUpperCase();
+  return words.map(w => w[0]).join("").slice(0, 4).toUpperCase();
 };
 
 /* ============================ FIFO engine ============================ */
@@ -148,8 +194,8 @@ function computePortfolio(priceMap) {
     }
   }
 
-  const open = [], closed = [];
-  const totals = { mv: 0, cost: 0, upl: 0, realizedAll: 0, closedRealized: 0, day: 0 };
+  const open = [], realizedRows = [];
+  const totals = { mv: 0, cost: 0, upl: 0, realizedAll: 0, day: 0 };
   const byClass = { stock: { mv: 0, cost: 0, upl: 0 }, crypto: { mv: 0, cost: 0, upl: 0 } };
 
   for (const a in byAsset) {
@@ -159,8 +205,9 @@ function computePortfolio(priceMap) {
     const openQty = A.lots.reduce((s, l) => s + l[0], 0);
     const openCost = A.lots.reduce((s, l) => s + l[0] * l[1], 0);
     const venues = [...A.venues].join(", ");
+    const stillOpen = openQty > EPS;
 
-    if (openQty > EPS) {
+    if (stillOpen) {
       const pinfo = priceMap[a] || {};
       const price = pinfo.price ?? 0;
       const mv = openQty * price;
@@ -173,16 +220,18 @@ function computePortfolio(priceMap) {
         ret: openCost ? upl / openCost : 0, realized, venues, day });
       totals.mv += mv; totals.cost += openCost; totals.upl += upl; totals.day += day;
       byClass[A.cls].mv += mv; byClass[A.cls].cost += openCost; byClass[A.cls].upl += upl;
-    } else if (A.sellQty > EPS) {
-      closed.push({ asset: a, cls: A.cls, qty: A.sellQty, avgBuy: A.costConsumed / A.sellQty,
+    }
+    // Realized row for EVERY asset you've sold any of — fully closed OR trimmed.
+    // Uses FIFO-matched sold lots, so the column sums exactly to Realized P&L.
+    if (A.sellQty > EPS) {
+      realizedRows.push({ asset: a, cls: A.cls, qty: A.sellQty, avgBuy: A.costConsumed / A.sellQty,
         cost: A.costConsumed, avgSell: A.sellProceeds / A.sellQty, proceeds: A.sellProceeds,
-        realized, ret: A.costConsumed ? realized / A.costConsumed : 0, venues });
-      totals.closedRealized += realized;
+        realized, ret: A.costConsumed ? realized / A.costConsumed : 0, venues, stillOpen });
     }
   }
   open.sort((a, b) => b.mv - a.mv);
-  closed.sort((a, b) => b.realized - a.realized);
-  return { open, closed, totals, byClass };
+  realizedRows.sort((a, b) => b.realized - a.realized);
+  return { open, realized: realizedRows, totals, byClass };
 }
 
 /* ============================ Live prices ============================ */
@@ -219,6 +268,15 @@ async function fetchJSON(url, opts) {
     return await r.json();
   } finally { clearTimeout(t); }
 }
+async function fetchText(url, opts) {
+  const ctrl = new AbortController();
+  const t = setTimeout(() => ctrl.abort(), 9000);
+  try {
+    const r = await fetch(url, { ...opts, signal: ctrl.signal });
+    if (!r.ok) throw new Error(r.status);
+    return await r.text();
+  } finally { clearTimeout(t); }
+}
 
 async function refreshPrices() {
   const held = heldAssets();
@@ -229,12 +287,13 @@ async function refreshPrices() {
 
   // ---- Crypto: CoinGecko (batched, no key) ----
   const cryptoAssets = held.filter(a => metaFor(a).src === "coingecko");
+  const cgId = a => metaFor(a).id || metaFor(a).sym;   // built-ins use .id, user assets use .sym
   if (cryptoAssets.length) {
-    const ids = [...new Set(cryptoAssets.map(a => metaFor(a).id))].join(",");
+    const ids = [...new Set(cryptoAssets.map(cgId).filter(Boolean))].join(",");
     try {
       const d = await fetchJSON(`https://api.coingecko.com/api/v3/simple/price?ids=${ids}&vs_currencies=usd&include_24hr_change=true`);
       for (const a of cryptoAssets) {
-        const row = d[metaFor(a).id];
+        const row = d[cgId(a)];
         if (row && row.usd) {
           STATE.livePrices[a] = { price: row.usd, changePct: row.usd_24h_change, prevClose: null, ts: now };
           liveCount++;
@@ -276,6 +335,29 @@ async function refreshPrices() {
     }
   }
 
+  // ---- MEXC tokenized stocks (CORS-blocked → via proxy; falls back to manual on failure) ----
+  const mexcAssets = held.filter(a => metaFor(a).src === "mexc");
+  if (mexcAssets.length) {
+    const proxies = u => [`https://corsproxy.io/?url=${encodeURIComponent(u)}`, `https://r.jina.ai/${u}`];
+    const rs = await Promise.allSettled(mexcAssets.map(async a => {
+      const sym = metaFor(a).sym, mult = multFor(a);
+      const target = `https://api.mexc.com/api/v3/ticker/price?symbol=${encodeURIComponent(sym)}`;
+      let raw = null;
+      for (const url of proxies(target)) {
+        try {
+          const txt = await fetchText(url);
+          try { raw = parseFloat(JSON.parse(txt).price); }
+          catch (e) { const mm = txt.match(/"price"\s*:\s*"?([\d.]+)/); if (mm) raw = parseFloat(mm[1]); }
+          if (raw > 0) break;
+        } catch (e) { /* try next proxy */ }
+      }
+      if (!(raw > 0)) throw new Error(sym);
+      STATE.livePrices[a] = { price: raw * mult, changePct: null, prevClose: null, ts: now, raw, mult };
+      liveCount++;
+    }));
+    if (rs.some(r => r.status === "rejected")) errors.push("MEXC");
+  }
+
   STATE.lastRefresh = now;
   saveState();
   render();
@@ -301,6 +383,7 @@ function render() {
   const map = buildPriceMap();
   const P = computePortfolio(map);
   renderKPIs(P);
+  renderCash(P);
   renderAllocation(P);
   renderSparkline();
   renderHoldings(P);
@@ -311,8 +394,8 @@ function render() {
 
 function renderKPIs(P) {
   const t = P.totals;
-  const cashDebt = latestCashDebt();
-  const netWorth = t.mv + cashDebt.net;   // investments + (cash - debt) from latest snapshot
+  const cashUSD = totalCashUSD();
+  const totalValue = t.mv + cashUSD;
   const totalPL = t.upl + t.realizedAll;
   const box = $("#kpis");
   box.innerHTML = "";
@@ -324,14 +407,22 @@ function renderKPIs(P) {
   };
 
   const dayChip = t.day ? `<span class="chip ${cls(t.day)}">${t.day > 0 ? "▲" : "▼"} ${money(Math.abs(t.day))} today</span>` : "";
-  card("Portfolio Value", money(t.mv),
-    `${dayChip} <span class="muted">invested cost ${money(t.cost)}</span>`, true);
+  card("Total Value", money(totalValue),
+    `<span class="muted">assets ${money(t.mv)} · cash ${money(cashUSD)}</span>`, true);
+
+  card("Assets", money(t.mv),
+    `${dayChip} <span class="muted">cost ${money(t.cost)}</span>`);
+
+  const bal = cashBalances();
+  const parts = CCYS.filter(c => Math.abs(bal[c]) > 0.005).map(c => moneyIn(bal[c], c, 0));
+  card("Cash", money(cashUSD),
+    `<span class="muted">${parts.length ? parts.join(" · ") : "no cash yet — add it below"}</span>`);
 
   card("Unrealized P&L", `<span class="${cls(t.upl)}">${money(t.upl, { sign: true })}</span>`,
     `<span class="chip ${cls(t.upl)}">${pct(t.cost ? t.upl / t.cost : 0)}</span>`);
 
   card("Realized P&L", `<span class="${cls(t.realizedAll)}">${money(t.realizedAll, { sign: true })}</span>`,
-    `<span class="muted">${money(t.closedRealized, { sign: true })} from closed</span>`);
+    `<span class="muted">from ${P.realized.length} sold position${P.realized.length === 1 ? "" : "s"}</span>`);
 
   card("Total P&L", `<span class="${cls(totalPL)}">${money(totalPL, { sign: true })}</span>`,
     `<span class="muted">unrealized + realized</span>`);
@@ -341,30 +432,57 @@ function renderKPIs(P) {
     `<span class="chip ${cls(stk.upl)}">${money(stk.upl, { sign: true })}</span>`);
   card("Crypto", money(cry.mv),
     `<span class="chip ${cls(cry.upl)}">${money(cry.upl, { sign: true })}</span>`);
-
-  if (cashDebt.has) {
-    card("Net Worth", money(netWorth),
-      `<span class="muted">incl. cash ${money(cashDebt.cash)} · debt ${money(cashDebt.debt)}</span>`);
-  }
 }
 
-function latestCashDebt() {
-  const s = STATE.snapshots || [];
-  if (!s.length) return { has: false, net: 0, cash: 0, debt: 0 };
-  const last = [...s].sort((a, b) => a.date < b.date ? -1 : 1).at(-1);
-  const cash = last.cash || 0, debt = last.debt || 0;
-  return { has: (cash !== 0 || debt !== 0), net: cash + debt, cash, debt };  // debt already negative
+/* ============================ Cash panel ============================ */
+function renderCash(P) {
+  const box = $("#cashPanel");
+  if (!box) return;
+  const bal = cashBalances();
+  const totUSD = totalCashUSD();
+  const chips = CCYS.map(c => `<div class="cash-chip${Math.abs(bal[c]) > 0.005 ? "" : " zero"}">
+      <span class="cc">${c}</span><span class="cv num ${bal[c] < -0.005 ? "neg" : ""}">${moneyIn(bal[c], c, 2)}</span></div>`).join("");
+  const tx = [...(STATE.cash || [])].map((e, i) => ({ e, i }))
+    .sort((a, b) => a.e.date < b.e.date ? 1 : a.e.date > b.e.date ? -1 : b.i - a.i).slice(0, 6);
+  const kindLabel = { deposit: "Deposit", withdraw: "Withdraw", convert: "Convert", adjust: "Set balance", buy: "Buy", sell: "Sell" };
+  const txHtml = tx.length ? tx.map(({ e, i }) => `<div class="cash-tx">
+      <span class="k k-${e.kind}">${kindLabel[e.kind] || e.kind}</span>
+      <span class="tn">${e.note || ""}</span>
+      <span class="td muted">${e.date}</span>
+      <span class="ta num ${e.amount < 0 ? "neg" : "pos"}">${e.amount > 0 ? "+" : ""}${moneyIn(e.amount, e.ccy, 2)}</span>
+      <button class="cash-del" data-cashdel="${i}" title="Delete">${ICON.trash}</button>
+    </div>`).join("") : `<div class="muted" style="padding:8px 0;font-size:.85rem">No cash transactions yet. Add your salary or set your current balance to start tracking.</div>`;
+
+  box.innerHTML = `
+    <div class="panel-head">
+      <h2>Cash <span class="tag">${money(totUSD)}</span></h2>
+      <div style="display:flex;gap:8px;flex-wrap:wrap">
+        <button class="btn primary" id="cashDeposit">＋ Add cash</button>
+        <button class="btn" id="cashWithdraw">Withdraw</button>
+        <button class="btn" id="cashConvert">Convert</button>
+        <button class="btn" id="cashSet">Set balance</button>
+      </div>
+    </div>
+    <div class="cash-bals">${chips}</div>
+    <div class="cash-list">${txHtml}</div>`;
+
+  $("#cashDeposit", box).onclick = () => cashModal("deposit");
+  $("#cashWithdraw", box).onclick = () => cashModal("withdraw");
+  $("#cashConvert", box).onclick = () => cashModal("convert");
+  $("#cashSet", box).onclick = () => cashModal("adjust");
 }
 
 function renderAllocation(P) {
-  const stk = P.byClass.stock.mv, cry = P.byClass.crypto.mv, tot = stk + cry;
+  const stk = P.byClass.stock.mv, cry = P.byClass.crypto.mv, cash = Math.max(totalCashUSD(), 0);
+  const tot = stk + cry + cash;
   const donut = $("#donut");
-  if (!tot) { donut.innerHTML = `<div class="empty">No open positions yet.</div>`; return; }
+  if (!tot) { donut.innerHTML = `<div class="empty">Nothing to show yet — add a trade or some cash.</div>`; return; }
 
   const r = 52, C = 2 * Math.PI * r, sw = 18;
   const segs = [
     { nm: "Stocks & ETFs", v: stk, color: "var(--stock)" },
     { nm: "Crypto", v: cry, color: "var(--crypto)" },
+    { nm: "Cash", v: cash, color: "var(--cash)" },
   ].filter(s => s.v > 0);
   let off = 0;
   const circles = segs.map(s => {
@@ -390,21 +508,21 @@ function renderAllocation(P) {
           <circle cx="70" cy="70" r="${r}" fill="none" stroke="var(--surface-2)" stroke-width="${sw}"></circle>
           ${circles}
         </svg>
-        <div class="center"><div><div class="big">${money(tot)}</div><div class="small">Invested</div></div></div>
+        <div class="center"><div><div class="big">${money(tot)}</div><div class="small">Total</div></div></div>
       </div>
       <div class="legend">${legend}</div>
     </div>`;
 
-  // per-asset allocation bars (top positions)
+  // allocation bars (top positions + cash)
   const bars = $("#allocBars");
-  const top = [...P.open].sort((a, b) => b.mv - a.mv).slice(0, 8);
-  bars.innerHTML = top.map(o => {
-    const color = o.cls === "crypto" ? "var(--crypto)" : "var(--stock)";
-    return `<div class="alloc-bar">
-      <div class="top"><span>${o.asset}</span><span class="muted">${money(o.mv)} · ${(o.mv / tot * 100).toFixed(1)}%</span></div>
-      <div class="track"><div class="fill" style="width:${(o.mv / tot * 100).toFixed(1)}%;background:${color}"></div></div>
-    </div>`;
-  }).join("");
+  const items = [...P.open].sort((a, b) => b.mv - a.mv).slice(0, 8)
+    .map(o => ({ nm: o.asset, v: o.mv, color: o.cls === "crypto" ? "var(--crypto)" : "var(--stock)" }));
+  if (cash > 0) items.push({ nm: "Cash", v: cash, color: "var(--cash)" });
+  items.sort((a, b) => b.v - a.v);
+  bars.innerHTML = items.map(o => `<div class="alloc-bar">
+      <div class="top"><span>${o.nm}</span><span class="muted">${money(o.v)} · ${(o.v / tot * 100).toFixed(1)}%</span></div>
+      <div class="track"><div class="fill" style="width:${(o.v / tot * 100).toFixed(1)}%;background:${o.color}"></div></div>
+    </div>`).join("");
 }
 
 function renderSparkline() {
@@ -454,11 +572,11 @@ function sortableHead(cols, sort, tableId) {
   }).join("");
 }
 
-function assetCell(o) {
+function assetCell(o, tag) {
   const badgeCls = o.cls === "crypto" ? "crypto" : "stock";
   return `<div class="asset-cell">
     <div class="asset-badge ${badgeCls}">${initials(o.asset)}</div>
-    <div class="asset-name"><span class="nm">${o.asset}</span><span class="vn">${o.venues}</span></div>
+    <div class="asset-name"><span class="nm">${o.asset}${tag ? ` <span class="mini-tag">${tag}</span>` : ""}</span><span class="vn">${o.venues}</span></div>
   </div>`;
 }
 
@@ -483,11 +601,13 @@ function renderHoldings(P) {
     const sub = g.rows.reduce((s, o) => ({ mv: s.mv + o.mv, cost: s.cost + o.cost, upl: s.upl + o.upl }), { mv: 0, cost: 0, upl: 0 });
     const rows = sortRows(g.rows, VIEW.holdSort).map(o => {
       const pdot = o.status === "live" ? "live" : "manual";
+      const mult = multFor(o.asset);
+      const multTag = (metaFor(o.asset).src === "mexc" && mult !== 1 && o.status === "live") ? ` <span class="muted" style="font-size:.7rem" title="MEXC ${metaFor(o.asset).sym} price ×${mult}">×${mult}</span>` : "";
       return `<tr>
         <td>${assetCell(o)}</td>
         <td class="num">${fmtQty(o.qty)}</td>
         <td class="num muted">${fmtPrice(o.avg)}</td>
-        <td class="num"><span class="price-tag"><span class="pdot ${pdot}"></span>${fmtPrice(o.price)}</span></td>
+        <td class="num"><span class="price-tag"><span class="pdot ${pdot}"></span>${fmtPrice(o.price)}${multTag}</span></td>
         <td class="num">${money(o.mv)}</td>
         <td class="num ${cls(o.upl)}">${money(o.upl, { sign: true })}</td>
         <td class="num ${cls(o.ret)}">${pct(o.ret)}</td>
@@ -523,10 +643,10 @@ function renderClosed(P) {
     { key: "ret", label: "Return" },
   ];
   $("#closedHead").innerHTML = sortableHead(cols, VIEW.closedSort, "closed");
-  if (!P.closed.length) { body.innerHTML = `<tr><td colspan="8" class="empty">No fully-closed positions yet.</td></tr>`; $("#closedFoot").innerHTML = ""; return; }
-  body.innerHTML = sortRows(P.closed, VIEW.closedSort).map(c => `
+  if (!P.realized.length) { body.innerHTML = `<tr><td colspan="8" class="empty">No sold positions yet.</td></tr>`; $("#closedFoot").innerHTML = ""; return; }
+  body.innerHTML = sortRows(P.realized, VIEW.closedSort).map(c => `
     <tr>
-      <td>${assetCell(c)}</td>
+      <td>${assetCell(c, c.stillOpen ? "trimmed" : "")}</td>
       <td class="num">${fmtQty(c.qty)}</td>
       <td class="num muted">${fmtPrice(c.avgBuy)}</td>
       <td class="num muted">${fmtPrice(c.avgSell)}</td>
@@ -535,7 +655,7 @@ function renderClosed(P) {
       <td class="num ${cls(c.realized)}">${money(c.realized, { sign: true })}</td>
       <td class="num ${cls(c.ret)}">${pct(c.ret)}</td>
     </tr>`).join("");
-  const tc = P.closed.reduce((s, c) => ({ cost: s.cost + c.cost, proc: s.proc + c.proceeds, r: s.r + c.realized }), { cost: 0, proc: 0, r: 0 });
+  const tc = P.realized.reduce((s, c) => ({ cost: s.cost + c.cost, proc: s.proc + c.proceeds, r: s.r + c.realized }), { cost: 0, proc: 0, r: 0 });
   $("#closedFoot").innerHTML = `<tr><td>Total</td><td></td><td></td><td></td>
     <td class="num">${money(tc.cost)}</td><td class="num">${money(tc.proc)}</td>
     <td class="num ${cls(tc.r)}">${money(tc.r, { sign: true })}</td>
@@ -588,6 +708,7 @@ function openModal(node) {
 function tradeModal(editIdx = null) {
   const t = editIdx != null ? STATE.trades[editIdx] : { date: new Date().toISOString().slice(0, 10), asset: "", type: "Stock", venue: "", side: "Buy", qty: "", price: "", fee: 0, ccy: "USD" };
   const assetList = [...new Set([...Object.keys(ASSET_META), ...STATE.trades.map(x => x.asset)])].sort();
+  const settleChecked = editIdx != null ? !!t.settle : true;
   const m = el("div", "modal");
   m.innerHTML = `
     <h3>${editIdx != null ? "Edit" : "Add"} trade <button class="x">&times;</button></h3>
@@ -598,13 +719,28 @@ function tradeModal(editIdx = null) {
       <div class="field"><label>Type</label><select id="f_type"><option${t.type === "Stock" ? " selected" : ""}>Stock</option><option${t.type === "Crypto" ? " selected" : ""}>Crypto</option></select></div>
       <div class="field"><label>Venue</label><input id="f_venue" value="${t.venue}" placeholder="Revolut, Nexo…"></div>
       <div class="field"><label>Side</label><select id="f_side"><option${t.side === "Buy" ? " selected" : ""}>Buy</option><option${t.side === "Sell" ? " selected" : ""}>Sell</option></select></div>
-      <div class="field"><label>Currency</label><select id="f_ccy"><option${t.ccy === "USD" ? " selected" : ""}>USD</option><option${t.ccy === "EUR" ? " selected" : ""}>EUR</option></select></div>
+      <div class="field"><label>Currency</label><select id="f_ccy">${CCYS.map(c => `<option${t.ccy === c ? " selected" : ""}>${c}</option>`).join("")}</select></div>
       <div class="field"><label>Quantity</label><input id="f_qty" type="number" step="any" value="${t.qty}" placeholder="0.00"></div>
       <div class="field"><label>Price (per unit)</label><input id="f_price" type="number" step="any" value="${t.price}" placeholder="0.00"></div>
       <div class="field"><label>Fee</label><input id="f_fee" type="number" step="any" value="${t.fee || 0}"></div>
       <div class="field"><label>FX (EUR→USD)</label><input id="f_fx" type="number" step="any" value="${FX().toFixed(4)}">
         <div class="hint">Used only for EUR trades → stored USD cost</div></div>
+      <div class="field full" id="f_srcbox" style="display:none;background:var(--surface-2);border:1px solid var(--border);border-radius:10px;padding:12px">
+        <label>Live price feed <span class="muted" style="text-transform:none;font-weight:400">— new asset, tell it where to price from</span></label>
+        <div style="display:flex;gap:8px;margin-top:4px">
+          <select id="f_src" style="flex:0 0 46%">
+            <option value="finnhub">Stock · Finnhub</option>
+            <option value="coingecko">Crypto · CoinGecko</option>
+            <option value="mexc">MEXC pair</option>
+            <option value="manual">Manual price</option>
+          </select>
+          <input id="f_sym" placeholder="ticker / id / pair" style="flex:1">
+        </div>
+        <div class="hint" id="f_srchint"></div>
+      </div>
       <div class="computed full"><span class="muted">Total cost (USD, incl. fee)</span><span id="f_total" class="num">—</span></div>
+      <label class="settle-row full"><input type="checkbox" id="f_settle"${settleChecked ? " checked" : ""}>
+        <span>Settle in cash — updates your <b id="f_settleccy">${t.ccy || "USD"}</b> balance</span></label>
     </div>
     <div class="modal-actions">
       <button class="btn" id="f_cancel">Cancel</button>
@@ -629,8 +765,25 @@ function tradeModal(editIdx = null) {
     return total;
   };
   ["f_qty", "f_price", "f_fee", "f_ccy", "f_fx", "f_side"].forEach(id => { $("#" + id, m).oninput = calc; $("#" + id, m).onchange = calc; });
+  $("#f_ccy", m).addEventListener("change", () => { $("#f_settleccy", m).textContent = $("#f_ccy", m).value; });
   // auto-set type from known asset
-  $("#f_asset", m).onchange = () => { const a = $("#f_asset", m).value.trim(); if (ASSET_META[a]) $("#f_type", m).value = metaFor(a).cls === "crypto" ? "Crypto" : "Stock"; };
+  const symHint = s => ({ finnhub: "US ticker, e.g. AAPL", coingecko: "CoinGecko id, e.g. bitcoin, solana, ripple", mexc: "MEXC pair, e.g. NOWONUSDT", manual: "no feed — set the price in ⚙ Settings" }[s] || "");
+  const defSym = (a, s) => s === "finnhub" ? a.toUpperCase() : s === "coingecko" ? a.toLowerCase() : s === "mexc" ? a.toUpperCase() + "USDT" : "";
+  const updateSrcBox = () => {
+    const a = $("#f_asset", m).value.trim();
+    const known = !!ASSET_META[a];
+    const box = $("#f_srcbox", m);
+    if (!a || known) { box.style.display = "none"; if (known) $("#f_type", m).value = metaFor(a).cls === "crypto" ? "Crypto" : "Stock"; return; }
+    box.style.display = "";
+    const reg = (STATE.assetMeta || {})[a];
+    if (reg) { $("#f_src", m).value = reg.src || "manual"; $("#f_sym", m).value = reg.sym || ""; }
+    else { const s = $("#f_type", m).value === "Crypto" ? "coingecko" : "finnhub"; $("#f_src", m).value = s; $("#f_sym", m).value = defSym(a, s); }
+    $("#f_srchint", m).textContent = symHint($("#f_src", m).value);
+  };
+  $("#f_asset", m).oninput = updateSrcBox;
+  $("#f_type", m).addEventListener("change", () => { const a = $("#f_asset", m).value.trim(); if (a && !ASSET_META[a] && !(STATE.assetMeta || {})[a]) { const s = $("#f_type", m).value === "Crypto" ? "coingecko" : "finnhub"; $("#f_src", m).value = s; $("#f_sym", m).value = defSym(a, s); $("#f_srchint", m).textContent = symHint(s); } });
+  $("#f_src", m).addEventListener("change", () => { $("#f_srchint", m).textContent = symHint($("#f_src", m).value); const a = $("#f_asset", m).value.trim(); if (a) $("#f_sym", m).value = defSym(a, $("#f_src", m).value); });
+  updateSrcBox();
   calc();
 
   $("#f_save", m).onclick = () => {
@@ -641,26 +794,120 @@ function tradeModal(editIdx = null) {
     const totalUSD = Math.abs(calc());
     const side = $("#f_side", m).value;
     const rec = {
+      id: (editIdx != null && STATE.trades[editIdx].id) ? STATE.trades[editIdx].id : uid(),
       date: $("#f_date", m).value, asset, type: $("#f_type", m).value,
       venue: $("#f_venue", m).value.trim() || "—", side,
       qty, price, fee: parseFloat($("#f_fee", m).value) || 0,
       totalUSD: side === "Sell" ? -totalUSD : totalUSD, ccy: $("#f_ccy", m).value,
+      settle: $("#f_settle", m).checked,
     };
+    if (!ASSET_META[asset]) {   // new/user asset → remember its class + price feed
+      STATE.assetMeta = STATE.assetMeta || {};
+      STATE.assetMeta[asset] = { cls: rec.type === "Crypto" ? "crypto" : "stock",
+        src: $("#f_src", m).value, sym: $("#f_sym", m).value.trim() || undefined };
+    }
     if (editIdx != null) STATE.trades[editIdx] = rec; else STATE.trades.push(rec);
+    syncTradeCash(rec);
     saveState(); render(); close();
     toast(editIdx != null ? "Trade updated" : "Trade added");
+    if (metaFor(asset).src !== "manual") refreshPrices();   // pull a live price for it now
   };
 }
 
 function deleteTrade(i) {
   const t = STATE.trades[i];
   if (!confirm(`Delete this trade?\n\n${t.date} · ${t.side} ${fmtQty(Math.abs(t.qty))} ${t.asset} @ ${t.price}`)) return;
+  if (t.id) STATE.cash = (STATE.cash || []).filter(e => e.tradeId !== t.id);   // remove linked cash movement
   STATE.trades.splice(i, 1); saveState(); render(); toast("Trade deleted");
+}
+
+function deleteCash(i) {
+  const e = (STATE.cash || [])[i];
+  if (!e) return;
+  if (e.tradeId) { toast("This came from a trade — edit or delete that trade instead", true); return; }
+  // convert entries come in pairs (grp): remove both legs
+  if (e.grp) STATE.cash = STATE.cash.filter(x => x.grp !== e.grp);
+  else STATE.cash.splice(i, 1);
+  saveState(); render(); toast("Cash entry removed");
+}
+
+function cashModal(kind) {
+  const today = new Date().toISOString().slice(0, 10);
+  const bal = cashBalances();
+  const titles = { deposit: "Add cash", withdraw: "Withdraw cash", convert: "Convert currency", adjust: "Set cash balance" };
+  const ccyOpts = sel => CCYS.map(c => `<option${c === sel ? " selected" : ""}>${c}</option>`).join("");
+  const m = el("div", "modal");
+
+  let body;
+  if (kind === "convert") {
+    body = `<div class="form-grid">
+      <div class="field"><label>Date</label><input type="date" id="c_date" value="${today}"></div>
+      <div class="field"><label>From</label><select id="c_from">${ccyOpts("EUR")}</select></div>
+      <div class="field"><label>Amount (from)</label><input id="c_amt" type="number" step="any" placeholder="0.00"></div>
+      <div class="field"><label>To</label><select id="c_to">${ccyOpts("USDT")}</select></div>
+      <div class="field full"><label>Rate (to per from)</label><input id="c_rate" type="number" step="any"></div>
+      <div class="computed full"><span class="muted">You receive</span><span id="c_recv" class="num">—</span></div>
+    </div>`;
+  } else if (kind === "adjust") {
+    body = `<div class="form-grid">
+      <div class="field"><label>Currency</label><select id="c_ccy">${ccyOpts("USD")}</select></div>
+      <div class="field"><label>Set balance to</label><input id="c_target" type="number" step="any" placeholder="0.00"></div>
+      <div class="computed full"><span class="muted">Adjustment</span><span id="c_adj" class="num">—</span></div>
+    </div>`;
+  } else {
+    body = `<div class="form-grid">
+      <div class="field"><label>Date</label><input type="date" id="c_date" value="${today}"></div>
+      <div class="field"><label>Currency</label><select id="c_ccy">${ccyOpts("USD")}</select></div>
+      <div class="field full"><label>Amount</label><input id="c_amt" type="number" step="any" placeholder="0.00"></div>
+      <div class="field full"><label>Note</label><input id="c_note" value="${kind === "deposit" ? "Salary" : ""}" placeholder="${kind === "deposit" ? "Salary, transfer in…" : "Reason"}"></div>
+    </div>`;
+  }
+  m.innerHTML = `<h3>${titles[kind]} <button class="x">&times;</button></h3>${body}
+    <div class="modal-actions"><button class="btn" id="c_cancel">Cancel</button>
+      <button class="btn primary" id="c_ok">${titles[kind]}</button></div>`;
+  const back = openModal(m); const close = () => back.remove();
+  m.querySelector(".x").onclick = close; $("#c_cancel", m).onclick = close;
+
+  if (kind === "convert") {
+    const usdPer = { USD: 1, USDT: 1, USDC: 1, EUR: FX() };
+    const setRate = () => { const f = $("#c_from", m).value, tt = $("#c_to", m).value; $("#c_rate", m).value = (f === tt ? 1 : usdPer[f] / usdPer[tt]).toFixed(4); recalc(); };
+    const recalc = () => { const amt = parseFloat($("#c_amt", m).value) || 0, rate = parseFloat($("#c_rate", m).value) || 0; $("#c_recv", m).textContent = moneyIn(amt * rate, $("#c_to", m).value, 2); };
+    $("#c_from", m).onchange = setRate; $("#c_to", m).onchange = setRate;
+    $("#c_amt", m).oninput = recalc; $("#c_rate", m).oninput = recalc; setRate();
+    $("#c_ok", m).onclick = () => {
+      const from = $("#c_from", m).value, to = $("#c_to", m).value;
+      const amt = Math.abs(parseFloat($("#c_amt", m).value)), rate = parseFloat($("#c_rate", m).value);
+      if (!amt || !rate || from === to) return toast("Enter amount, rate, and two different currencies", true);
+      const grp = uid(), d = $("#c_date", m).value;
+      STATE.cash.push({ date: d, ccy: from, amount: -amt, kind: "convert", note: `→ ${to}`, grp });
+      STATE.cash.push({ date: d, ccy: to, amount: amt * rate, kind: "convert", note: `from ${from}`, grp });
+      saveState(); render(); close(); toast(`Converted ${moneyIn(amt, from, 2)} → ${moneyIn(amt * rate, to, 2)}`);
+    };
+  } else if (kind === "adjust") {
+    const recalc = () => { const ccy = $("#c_ccy", m).value, tgt = parseFloat($("#c_target", m).value); const adj = isNaN(tgt) ? 0 : tgt - (bal[ccy] || 0); $("#c_adj", m).textContent = `${adj >= 0 ? "+" : ""}${moneyIn(adj, ccy, 2)} (was ${moneyIn(bal[ccy] || 0, ccy, 2)})`; };
+    $("#c_ccy", m).onchange = recalc; $("#c_target", m).oninput = recalc; recalc();
+    $("#c_ok", m).onclick = () => {
+      const ccy = $("#c_ccy", m).value, tgt = parseFloat($("#c_target", m).value);
+      if (isNaN(tgt)) return toast("Enter a target balance", true);
+      const adj = tgt - (bal[ccy] || 0);
+      if (Math.abs(adj) >= 0.005) STATE.cash.push({ date: today, ccy, amount: adj, kind: "adjust", note: "Set balance" });
+      saveState(); render(); close(); toast(`${ccy} balance set to ${moneyIn(tgt, ccy, 2)}`);
+    };
+  } else {
+    $("#c_ok", m).onclick = () => {
+      const ccy = $("#c_ccy", m).value, amt = Math.abs(parseFloat($("#c_amt", m).value));
+      if (!amt) return toast("Enter an amount", true);
+      STATE.cash.push({ date: $("#c_date", m).value, ccy, amount: kind === "withdraw" ? -amt : amt, kind,
+        note: $("#c_note", m).value.trim() || (kind === "deposit" ? "Deposit" : "Withdrawal") });
+      saveState(); render(); close(); toast(`${kind === "deposit" ? "Added" : "Withdrew"} ${moneyIn(amt, ccy, 2)}`);
+    };
+  }
 }
 
 /* ============================ Settings / prices / data ============================ */
 function settingsModal() {
   const manualAssets = heldAssets().filter(a => metaFor(a).src === "manual");
+  const mexcAssets = heldAssets().filter(a => metaFor(a).src === "mexc");
   const m = el("div", "modal");
   m.innerHTML = `
     <h3>Settings <button class="x">&times;</button></h3>
@@ -670,12 +917,30 @@ function settingsModal() {
     </div>
     <div class="field full"><input id="s_key" value="${STATE.settings.finnhubKey || ""}" placeholder="Paste Finnhub key…"></div>
 
+    ${mexcAssets.length ? `<div class="settings-row"><div class="info"><div class="t" style="margin-top:14px">MEXC feeds &amp; multipliers</div>
+      <div class="d">Fetched from MEXC via a proxy. The multiplier converts the token price to your share-equivalent price.</div></div></div>
+      ${mexcAssets.map(a => `<div class="field full" style="display:flex;gap:10px;align-items:center">
+        <label style="flex:1;margin:0;text-transform:none;font-size:.85rem;color:var(--text)">${a} <span class="muted">(${metaFor(a).sym})</span></label>
+        <span class="muted" style="font-size:.85rem">×</span><input data-mult="${a.replace(/"/g, "&quot;")}" type="number" step="any" style="width:100px" value="${multFor(a)}">
+      </div>`).join("")}` : ""}
+
     ${manualAssets.length ? `<div class="settings-row"><div class="info"><div class="t" style="margin-top:14px">Manual prices</div>
       <div class="d">Assets without an automatic feed (e.g. private equity). Set the current price per unit (USD).</div></div></div>
       ${manualAssets.map(a => `<div class="field full" style="display:flex;gap:10px;align-items:center">
         <label style="flex:1;margin:0;text-transform:none;font-size:.85rem;color:var(--text)">${a}</label>
         <input data-mp="${a.replace(/"/g, "&quot;")}" type="number" step="any" style="width:150px" value="${STATE.manualPrices[a] ?? ""}">
       </div>`).join("")}` : ""}
+
+    <div class="settings-row"><div class="info"><div class="t" style="margin-top:14px">Backup to private GitHub</div>
+      <div class="d">Saves your data to your private repo over HTTPS. Use a <b>fine-grained token</b> scoped to this one repo (Contents: Read and write) — stored only in this browser, revocable anytime. <a href="https://github.com/settings/personal-access-tokens/new" target="_blank" style="color:var(--accent)">Create token ↗</a></div></div></div>
+    <div class="field full"><label>Repository (owner/name)</label><input id="s_gh_repo" value="${(ghCfg().repo || "Alberic-flow/wealth-dashboard")}" placeholder="owner/repo"></div>
+    <div class="field full"><label>Access token</label><input id="s_gh_token" type="password" value="${ghCfg().token || ""}" placeholder="github_pat_…"></div>
+    <label class="settle-row full"><input type="checkbox" id="s_gh_auto"${ghCfg().auto ? " checked" : ""}> <span>Auto-backup after every change (new trades push to Git automatically)</span></label>
+    <div class="modal-actions" style="margin-top:8px">
+      <button class="btn primary" id="s_gh_backup">⬆ Back up now</button>
+      <button class="btn" id="s_gh_restore">⬇ Restore from GitHub</button>
+      <span class="muted" id="s_gh_status" style="align-self:center;font-size:.8rem"></span>
+    </div>
 
     <div class="settings-row"><div class="info"><div class="t" style="margin-top:14px">Your data</div>
       <div class="d">Everything lives in this browser. Export to back up or move devices.</div></div></div>
@@ -693,15 +958,27 @@ function settingsModal() {
   const close = () => back.remove();
   m.querySelector(".x").onclick = close;
 
+  const saveGh = () => { const c = ghCfg(); c.repo = $("#s_gh_repo", m).value.trim(); c.token = $("#s_gh_token", m).value.trim(); c.auto = $("#s_gh_auto", m).checked; setGhCfg(c); return c; };
+  const ghStatus = () => { const s = $("#s_gh_status", m); if (!s) return; const c = ghCfg(); s.textContent = c.lastBackup ? "Last backup " + new Date(c.lastBackup).toLocaleString("en-GB", { day: "2-digit", month: "short", hour: "2-digit", minute: "2-digit" }) : (c.token ? "Not backed up yet" : ""); };
+
   $("#s_save", m).onclick = () => {
     STATE.settings.finnhubKey = $("#s_key", m).value.trim();
     $$("[data-mp]", m).forEach(inp => {
       const a = inp.getAttribute("data-mp"); const v = parseFloat(inp.value);
       if (!isNaN(v)) STATE.manualPrices[a] = v;
     });
+    STATE.settings.multipliers = STATE.settings.multipliers || {};
+    $$("[data-mult]", m).forEach(inp => {
+      const a = inp.getAttribute("data-mult"); const v = parseFloat(inp.value);
+      if (!isNaN(v)) STATE.settings.multipliers[a] = v;
+    });
+    saveGh();
     saveState(); render(); close(); toast("Settings saved");
-    if (STATE.settings.finnhubKey) refreshPrices();
+    refreshPrices();
   };
+  ghStatus();
+  $("#s_gh_backup", m).onclick = async () => { saveGh(); const b = $("#s_gh_backup", m); b.disabled = true; b.textContent = "Backing up…"; await ghBackup(false); b.disabled = false; b.textContent = "⬆ Back up now"; ghStatus(); };
+  $("#s_gh_restore", m).onclick = async () => { if (!confirm("Restore from GitHub? This replaces your current local data with the backup.")) return; saveGh(); await ghRestore(); ghStatus(); };
   $("#s_export", m).onclick = exportData;
   $("#s_import", m).onclick = () => $("#s_file", m).click();
   $("#s_file", m).onchange = e => importData(e.target.files[0], close);
@@ -709,9 +986,44 @@ function settingsModal() {
   $("#s_change", m).onclick = () => { close(); changePasscodeModal(); };
 }
 
+function buildCSV() {
+  const esc = v => { v = v == null ? "" : String(v); return /[",\n]/.test(v) ? '"' + v.replace(/"/g, '""') + '"' : v; };
+  const byDate = (a, b) => a.date < b.date ? -1 : a.date > b.date ? 1 : 0;
+  const lines = [];
+
+  // --- Trades ---
+  const tcols = ["date", "asset", "type", "venue", "side", "qty", "price", "ccy", "fee", "totalUSD"];
+  lines.push("TRADES");
+  lines.push(["Date", "Asset", "Type", "Venue", "Side", "Quantity", "Price", "Currency", "Fee", "Total USD"].join(","));
+  [...(STATE.trades || [])].sort(byDate).forEach(t => lines.push(tcols.map(c => esc(t[c])).join(",")));
+
+  // --- Cash transactions ---
+  const kindLabel = { deposit: "Deposit", withdraw: "Withdraw", convert: "Convert", adjust: "Set balance", buy: "Buy", sell: "Sell" };
+  lines.push("", "CASH TRANSACTIONS");
+  lines.push(["Date", "Transaction", "Currency", "Amount", "Note"].join(","));
+  [...(STATE.cash || [])].sort(byDate).forEach(e =>
+    lines.push([esc(e.date), esc(kindLabel[e.kind] || e.kind), esc(e.ccy), esc(e.amount), esc(e.note || "")].join(",")));
+
+  // --- Current cash balances ---
+  const bal = cashBalances();
+  lines.push("", "CASH BALANCES");
+  lines.push("Currency,Balance");
+  CCYS.forEach(c => lines.push(`${c},${bal[c]}`));
+
+  return lines.join("\n");
+}
+function exportCSV() {
+  const trades = STATE.trades || [], cash = STATE.cash || [];
+  if (!trades.length && !cash.length) return toast("Nothing to export", true);
+  const blob = new Blob([buildCSV()], { type: "text/csv;charset=utf-8" });
+  const a = el("a"); a.href = URL.createObjectURL(blob);
+  a.download = `wealth-export-${new Date().toISOString().slice(0, 10)}.csv`;
+  a.click(); URL.revokeObjectURL(a.href);
+  toast(`Exported ${trades.length} trades + ${cash.length} cash entries`);
+}
 function exportData() {
   const data = { version: 1, exported: new Date().toISOString(), trades: STATE.trades,
-    snapshots: STATE.snapshots, manualPrices: STATE.manualPrices, fxEURUSD: STATE.fxEURUSD };
+    snapshots: STATE.snapshots, cash: STATE.cash, assetMeta: STATE.assetMeta, manualPrices: STATE.manualPrices, fxEURUSD: STATE.fxEURUSD };
   const blob = new Blob([JSON.stringify(data, null, 1)], { type: "application/json" });
   const a = el("a"); a.href = URL.createObjectURL(blob);
   a.download = `wealth-backup-${new Date().toISOString().slice(0, 10)}.json`;
@@ -726,12 +1038,81 @@ function importData(file, done) {
       if (!Array.isArray(d.trades)) throw new Error("no trades array");
       STATE.trades = d.trades;
       if (Array.isArray(d.snapshots)) STATE.snapshots = d.snapshots;
+      if (Array.isArray(d.cash)) STATE.cash = d.cash;
+      if (d.assetMeta) STATE.assetMeta = d.assetMeta;
       if (d.manualPrices) STATE.manualPrices = d.manualPrices;
       if (d.fxEURUSD) STATE.fxEURUSD = d.fxEURUSD;
       saveState(); render(); if (done) done(); toast(`Imported ${d.trades.length} trades`);
     } catch (e) { toast("Import failed: " + e.message, true); }
   };
   r.readAsText(file);
+}
+
+/* ============================ GitHub private backup ============================ */
+const GH_KEY = "gh_backup_cfg";   // {token, repo, path, branch, auto, lastBackup} — kept OUT of exported data
+function ghCfg() { try { return JSON.parse(localStorage.getItem(GH_KEY)) || {}; } catch (e) { return {}; } }
+function setGhCfg(c) { localStorage.setItem(GH_KEY, JSON.stringify(c)); }
+const b64enc = s => btoa(unescape(encodeURIComponent(s)));
+const b64dec = b => decodeURIComponent(escape(atob(b)));
+
+function backupPayload() {   // full snapshot; token lives outside STATE so it is never included
+  return { version: 1, exported: new Date().toISOString(), trades: STATE.trades, snapshots: STATE.snapshots,
+    cash: STATE.cash, assetMeta: STATE.assetMeta, manualPrices: STATE.manualPrices,
+    settings: { finnhubKey: STATE.settings.finnhubKey || "", multipliers: STATE.settings.multipliers || {} },
+    fxEURUSD: STATE.fxEURUSD };
+}
+async function ghApi(method, path, body) {
+  const c = ghCfg();
+  const r = await fetch(`https://api.github.com/repos/${c.repo}/${path}`, {
+    method, headers: { Authorization: `Bearer ${c.token}`, Accept: "application/vnd.github+json" },
+    body: body ? JSON.stringify(body) : undefined,
+  });
+  if (!r.ok) throw new Error(`${r.status} ${(await r.text()).slice(0, 140)}`);
+  return r.json();
+}
+async function ghSha(path, branch) {
+  try { return (await ghApi("GET", `contents/${encodeURIComponent(path)}?ref=${encodeURIComponent(branch)}`)).sha; }
+  catch (e) { return null; }   // 404 = file doesn't exist yet
+}
+async function ghBackup(silent) {
+  const c = ghCfg();
+  if (!c.token || !c.repo) { if (!silent) toast("Set up GitHub backup in Settings first", true); return false; }
+  const path = c.path || "my-data.json", branch = c.branch || "main";
+  try {
+    const sha = await ghSha(path, branch);
+    await ghApi("PUT", `contents/${encodeURIComponent(path)}`, {
+      message: `wealth backup ${new Date().toISOString()}`,
+      content: b64enc(JSON.stringify(backupPayload(), null, 1)), sha: sha || undefined, branch });
+    c.lastBackup = Date.now(); setGhCfg(c);
+    if (!silent) toast("Backed up to GitHub ✓");
+    return true;
+  } catch (e) { toast("GitHub backup failed: " + e.message, true); return false; }
+}
+async function ghRestore() {
+  const c = ghCfg();
+  if (!c.token || !c.repo) return toast("Set up GitHub backup first", true);
+  const path = c.path || "my-data.json", branch = c.branch || "main";
+  try {
+    const d = await ghApi("GET", `contents/${encodeURIComponent(path)}?ref=${encodeURIComponent(branch)}`);
+    const j = JSON.parse(b64dec(d.content));
+    if (!Array.isArray(j.trades)) throw new Error("backup has no trades");
+    STATE.trades = j.trades;
+    if (Array.isArray(j.snapshots)) STATE.snapshots = j.snapshots;
+    if (Array.isArray(j.cash)) STATE.cash = j.cash;
+    if (j.assetMeta) STATE.assetMeta = j.assetMeta;
+    if (j.manualPrices) STATE.manualPrices = j.manualPrices;
+    if (j.settings) { STATE.settings.finnhubKey = j.settings.finnhubKey || STATE.settings.finnhubKey; STATE.settings.multipliers = j.settings.multipliers || STATE.settings.multipliers; }
+    if (j.fxEURUSD) STATE.fxEURUSD = j.fxEURUSD;
+    saveState(); render(); refreshPrices();
+    toast(`Restored ${STATE.trades.length} trades from GitHub ✓`);
+  } catch (e) { toast("Restore failed: " + e.message, true); }
+}
+let ghTimer = null;
+function ghAutoBackup() {
+  const c = ghCfg();
+  if (!c.auto || !c.token || !c.repo) return;
+  clearTimeout(ghTimer);
+  ghTimer = setTimeout(() => ghBackup(true), 3000);   // debounce bursts of edits into one push
 }
 
 /* ============================ Passcode gate ============================ */
@@ -784,6 +1165,8 @@ function changePasscodeModal() {
 function wireHeader() {
   $("#refreshBtn").onclick = refreshPrices;
   $("#addBtn").onclick = () => tradeModal();
+  const addBtn3 = $("#addBtn3"); if (addBtn3) addBtn3.onclick = () => tradeModal();
+  const csvBtn = $("#csvBtn"); if (csvBtn) csvBtn.onclick = exportCSV;
   $("#settingsBtn").onclick = settingsModal;
   $("#lockBtn").onclick = () => { sessionStorage.removeItem("unlocked"); location.reload(); };
   $$("#ccyToggle button").forEach(b => b.onclick = () => {
@@ -799,6 +1182,7 @@ function wireHeader() {
     }
     const ed = e.target.closest("[data-edit]"); if (ed) return tradeModal(+ed.dataset.edit);
     const dl = e.target.closest("[data-del]"); if (dl) return deleteTrade(+dl.dataset.del);
+    const cd = e.target.closest("[data-cashdel]"); if (cd) return deleteCash(+cd.dataset.cashdel);
   });
 }
 
@@ -809,7 +1193,10 @@ function boot() {
   // migrate: ensure fields exist
   STATE.livePrices = STATE.livePrices || {};
   STATE.settings = STATE.settings || { finnhubKey: "" };
+  STATE.settings.multipliers = STATE.settings.multipliers || {};
   STATE.manualPrices = STATE.manualPrices || {};
+  STATE.cash = STATE.cash || [];
+  STATE.assetMeta = STATE.assetMeta || {};
   saveState();
   wireHeader();
   render();

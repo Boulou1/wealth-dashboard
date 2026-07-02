@@ -47,6 +47,8 @@
     <main class="wrap">
       <section class="kpis" id="kpis"></section>
 
+      <section class="panel" id="cashPanel"></section>
+
       <div class="grid-2">
         <div class="panel">
           <div class="panel-head"><h2>Allocation</h2></div>
@@ -64,7 +66,7 @@
       <div id="holdings"></div>
 
       <div class="panel">
-        <div class="panel-head"><h2>Closed positions <span class="tag">realized</span></h2></div>
+        <div class="panel-head"><h2>Realized P&amp;L <span class="tag">closed &amp; trimmed</span></h2></div>
         <div class="table-scroll"><table class="tbl">
           <thead><tr id="closedHead"></tr></thead>
           <tbody id="closedBody"></tbody>
@@ -74,7 +76,10 @@
 
       <div class="panel">
         <div class="panel-head"><h2>Trade log <span class="tag"><span id="logCount">0</span> trades</span></h2>
-          <button class="btn" id="addBtn2" onclick="tradeModal()" style="display:none"></button></div>
+          <div style="display:flex;gap:8px">
+            <button class="btn" id="csvBtn" title="Export trades, cash & balances as CSV">⬇ Export CSV</button>
+            <button class="btn" id="addBtn3">+ Add trade</button>
+          </div></div>
         <div class="table-scroll"><table class="tbl">
           <thead><tr>
             <th class="no-sort">Date</th>
@@ -91,7 +96,7 @@
       </div>
 
       <footer class="foot">
-        Prices: crypto via CoinGecko · stocks via Finnhub · FX via Frankfurter.
+        Prices: crypto via CoinGecko · stocks via Finnhub · MEXC (tokenized) via proxy · FX via Frankfurter.
         Data stored locally in your browser. Cost basis uses FIFO (fees included).
       </footer>
     </main>
