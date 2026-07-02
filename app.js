@@ -932,8 +932,8 @@ function settingsModal() {
       </div>`).join("")}` : ""}
 
     <div class="settings-row"><div class="info"><div class="t" style="margin-top:14px">Backup to private GitHub</div>
-      <div class="d">Saves your data to your private repo over HTTPS. Use a <b>fine-grained token</b> scoped to this one repo (Contents: Read and write) — stored only in this browser, revocable anytime. <a href="https://github.com/settings/personal-access-tokens/new" target="_blank" style="color:var(--accent)">Create token ↗</a></div></div></div>
-    <div class="field full"><label>Repository (owner/name)</label><input id="s_gh_repo" value="${(ghCfg().repo || "Boulou1/wealth-dashboard")}" placeholder="owner/repo"></div>
+      <div class="d">Saves <b>data.json + trades.csv + cash.csv</b> to your <b>private</b> data repo over HTTPS (CSVs render as tables on GitHub). Use a <b>fine-grained token</b> scoped to that repo (Contents: Read and write) — stored only in this browser, revocable anytime. <a href="https://github.com/settings/personal-access-tokens/new" target="_blank" style="color:var(--accent)">Create token ↗</a></div></div></div>
+    <div class="field full"><label>Private data repo (owner/name)</label><input id="s_gh_repo" value="${(ghCfg().repo || "Boulou1/wealth-data")}" placeholder="owner/repo"></div>
     <div class="field full"><label>Access token</label><input id="s_gh_token" type="password" value="${ghCfg().token || ""}" placeholder="github_pat_…"></div>
     <label class="settle-row full"><input type="checkbox" id="s_gh_auto"${ghCfg().auto ? " checked" : ""}> <span>Auto-backup after every change (new trades push to Git automatically)</span></label>
     <div class="modal-actions" style="margin-top:8px">
@@ -975,6 +975,7 @@ function settingsModal() {
     saveGh();
     saveState(); render(); close(); toast("Settings saved");
     refreshPrices();
+    if (ghReady() && (!STATE.trades || !STATE.trades.length)) ghRestore();   // just added token on a fresh device → pull data
   };
   ghStatus();
   $("#s_gh_backup", m).onclick = async () => { saveGh(); const b = $("#s_gh_backup", m); b.disabled = true; b.textContent = "Backing up…"; await ghBackup(false); b.disabled = false; b.textContent = "⬆ Back up now"; ghStatus(); };
@@ -1052,6 +1053,7 @@ function importData(file, done) {
 const GH_KEY = "gh_backup_cfg";   // {token, repo, path, branch, auto, lastBackup} — kept OUT of exported data
 function ghCfg() { try { return JSON.parse(localStorage.getItem(GH_KEY)) || {}; } catch (e) { return {}; } }
 function setGhCfg(c) { localStorage.setItem(GH_KEY, JSON.stringify(c)); }
+function ghReady() { const c = ghCfg(); return !!(c.token && c.repo); }
 const b64enc = s => btoa(unescape(encodeURIComponent(s)));
 const b64dec = b => decodeURIComponent(escape(atob(b)));
 
@@ -1074,24 +1076,40 @@ async function ghSha(path, branch) {
   try { return (await ghApi("GET", `contents/${encodeURIComponent(path)}?ref=${encodeURIComponent(branch)}`)).sha; }
   catch (e) { return null; }   // 404 = file doesn't exist yet
 }
+function csvTrades() {
+  const esc = v => { v = v == null ? "" : String(v); return /[",\n]/.test(v) ? '"' + v.replace(/"/g, '""') + '"' : v; };
+  const cols = ["date", "asset", "type", "venue", "side", "qty", "price", "ccy", "fee", "totalUSD"];
+  const rows = [...(STATE.trades || [])].sort((a, b) => a.date < b.date ? -1 : a.date > b.date ? 1 : 0).map(t => cols.map(c => esc(t[c])).join(","));
+  return ["Date,Asset,Type,Venue,Side,Quantity,Price,Currency,Fee,Total USD", ...rows].join("\n");
+}
+function csvCash() {
+  const esc = v => { v = v == null ? "" : String(v); return /[",\n]/.test(v) ? '"' + v.replace(/"/g, '""') + '"' : v; };
+  const kl = { deposit: "Deposit", withdraw: "Withdraw", convert: "Convert", adjust: "Set balance", buy: "Buy", sell: "Sell" };
+  const rows = [...(STATE.cash || [])].sort((a, b) => a.date < b.date ? -1 : a.date > b.date ? 1 : 0).map(e => [esc(e.date), esc(kl[e.kind] || e.kind), esc(e.ccy), esc(e.amount), esc(e.note || "")].join(","));
+  return ["Date,Transaction,Currency,Amount,Note", ...rows].join("\n");
+}
+async function ghPutFile(path, contentStr, message) {
+  const branch = ghCfg().branch || "main";
+  const sha = await ghSha(path, branch);
+  await ghApi("PUT", `contents/${encodeURIComponent(path)}`, { message, content: b64enc(contentStr), sha: sha || undefined, branch });
+}
 async function ghBackup(silent) {
   const c = ghCfg();
   if (!c.token || !c.repo) { if (!silent) toast("Set up GitHub backup in Settings first", true); return false; }
-  const path = c.path || "my-data.json", branch = c.branch || "main";
   try {
-    const sha = await ghSha(path, branch);
-    await ghApi("PUT", `contents/${encodeURIComponent(path)}`, {
-      message: `wealth backup ${new Date().toISOString()}`,
-      content: b64enc(JSON.stringify(backupPayload(), null, 1)), sha: sha || undefined, branch });
+    const stamp = new Date().toISOString();
+    await ghPutFile("data.json", JSON.stringify(backupPayload(), null, 1), `backup ${stamp}`);   // canonical (restore reads this)
+    await ghPutFile("trades.csv", csvTrades(), `backup ${stamp}`);                                // readable table on GitHub
+    await ghPutFile("cash.csv", csvCash(), `backup ${stamp}`);
     c.lastBackup = Date.now(); setGhCfg(c);
-    if (!silent) toast("Backed up to GitHub ✓");
+    if (!silent) toast("Backed up to GitHub ✓ (data.json, trades.csv, cash.csv)");
     return true;
   } catch (e) { toast("GitHub backup failed: " + e.message, true); return false; }
 }
 async function ghRestore() {
   const c = ghCfg();
   if (!c.token || !c.repo) return toast("Set up GitHub backup first", true);
-  const path = c.path || "my-data.json", branch = c.branch || "main";
+  const path = "data.json", branch = c.branch || "main";
   try {
     const d = await ghApi("GET", `contents/${encodeURIComponent(path)}?ref=${encodeURIComponent(branch)}`);
     const j = JSON.parse(b64dec(d.content));
@@ -1201,6 +1219,8 @@ function boot() {
   wireHeader();
   render();
   refreshPrices();   // fetch live on load
+  // Fresh device with a saved token but no local data → pull the latest backup down.
+  if (ghReady() && (!STATE.trades || !STATE.trades.length)) ghRestore();
 }
 
 document.addEventListener("DOMContentLoaded", () => { initGate(); });
