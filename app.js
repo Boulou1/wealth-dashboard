@@ -44,6 +44,9 @@ function multFor(asset) {
 }
 
 const LS_KEY = "wealth_state_v1";
+// Shared page password for PUBLIC deploys: SHA-256 hex of the password everyone must enter.
+// Empty string = per-device passcode (local use). Set this for the public GitHub Pages site.
+const GATE_HASH = "";
 const EPS = 1e-6;
 
 /* ============================ State ============================ */
@@ -1090,12 +1093,25 @@ function csvCash() {
 }
 async function ghPutFile(path, contentStr, message) {
   const branch = ghCfg().branch || "main";
-  const sha = await ghSha(path, branch);
-  await ghApi("PUT", `contents/${encodeURIComponent(path)}`, { message, content: b64enc(contentStr), sha: sha || undefined, branch });
+  let sha = await ghSha(path, branch);
+  for (let attempt = 0; attempt < 3; attempt++) {
+    try {
+      await ghApi("PUT", `contents/${encodeURIComponent(path)}`, { message, content: b64enc(contentStr), sha: sha || undefined, branch });
+      return;
+    } catch (e) {
+      const msg = String(e.message);
+      // 409 (sha out of date) or 422 (sha required) → refetch current sha and retry
+      if ((msg.startsWith("409") || msg.startsWith("422")) && attempt < 2) { sha = await ghSha(path, branch); continue; }
+      throw e;
+    }
+  }
 }
+let ghBusy = false;
 async function ghBackup(silent) {
   const c = ghCfg();
   if (!c.token || !c.repo) { if (!silent) toast("Set up GitHub backup in Settings first", true); return false; }
+  if (ghBusy) { if (!silent) toast("A backup is already in progress…"); return false; }   // no concurrent writes
+  ghBusy = true;
   try {
     const stamp = new Date().toISOString();
     await ghPutFile("data.json", JSON.stringify(backupPayload(), null, 1), `backup ${stamp}`);   // canonical (restore reads this)
@@ -1105,6 +1121,7 @@ async function ghBackup(silent) {
     if (!silent) toast("Backed up to GitHub ✓ (data.json, trades.csv, cash.csv)");
     return true;
   } catch (e) { toast("GitHub backup failed: " + e.message, true); return false; }
+  finally { ghBusy = false; }
 }
 async function ghRestore() {
   const c = ghCfg();
@@ -1136,13 +1153,14 @@ function ghAutoBackup() {
 /* ============================ Passcode gate ============================ */
 async function initGate() {
   const gate = $("#gate"), app = $("#app");
-  const hash = localStorage.getItem("gateHash");
+  const sharedMode = !!GATE_HASH;                                   // public deploy: one password for everyone
+  const hash = sharedMode ? GATE_HASH : localStorage.getItem("gateHash");
   if (sessionStorage.getItem("unlocked") === "1") { gate.classList.add("hidden"); app.classList.remove("hidden"); boot(); return true; }
 
   const title = $("#gateTitle"), sub = $("#gateSub"), inp = $("#gateInput"), err = $("#gateErr"), btn = $("#gateBtn");
-  const setup = !hash;
-  title.textContent = setup ? "Set a passcode" : "Enter passcode";
-  sub.textContent = setup ? "Protects this dashboard on this device." : "Welcome back.";
+  const setup = !sharedMode && !hash;                              // only offer "set" for per-device local use
+  title.textContent = setup ? "Set a passcode" : "Enter password";
+  sub.textContent = setup ? "Protects this dashboard on this device." : (sharedMode ? "Enter the page password." : "Welcome back.");
   btn.textContent = setup ? "Set & unlock" : "Unlock";
 
   const submit = async () => {
