@@ -933,7 +933,7 @@ function settingsModal() {
 
     <div class="settings-row"><div class="info"><div class="t" style="margin-top:14px">Backup to private GitHub</div>
       <div class="d">Saves your data to your private repo over HTTPS. Use a <b>fine-grained token</b> scoped to this one repo (Contents: Read and write) — stored only in this browser, revocable anytime. <a href="https://github.com/settings/personal-access-tokens/new" target="_blank" style="color:var(--accent)">Create token ↗</a></div></div></div>
-    <div class="field full"><label>Repository (owner/name)</label><input id="s_gh_repo" value="${(ghCfg().repo || "Alberic-flow/wealth-dashboard")}" placeholder="owner/repo"></div>
+    <div class="field full"><label>Repository (owner/name)</label><input id="s_gh_repo" value="${(ghCfg().repo || "Boulou1/wealth-dashboard")}" placeholder="owner/repo"></div>
     <div class="field full"><label>Access token</label><input id="s_gh_token" type="password" value="${ghCfg().token || ""}" placeholder="github_pat_…"></div>
     <label class="settle-row full"><input type="checkbox" id="s_gh_auto"${ghCfg().auto ? " checked" : ""}> <span>Auto-backup after every change (new trades push to Git automatically)</span></label>
     <div class="modal-actions" style="margin-top:8px">
