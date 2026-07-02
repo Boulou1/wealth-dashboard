@@ -255,7 +255,7 @@ function buildPriceMap() {
   for (const a in STATE.manualPrices) map[a] = { price: STATE.manualPrices[a], status: "manual" };
   for (const a in STATE.livePrices) {
     const lp = STATE.livePrices[a];
-    map[a] = { price: lp.price, status: "live", changePct: lp.changePct, prevClose: lp.prevClose, ts: lp.ts };
+    map[a] = { price: lp.price * multFor(a), status: "live", changePct: lp.changePct, prevClose: lp.prevClose, ts: lp.ts };
   }
   // manual-source assets always use manual price (never overwritten by stale live)
   for (const a in ASSET_META) {
@@ -346,7 +346,7 @@ async function refreshPrices() {
   if (mexcAssets.length) {
     const proxies = u => [`https://corsproxy.io/?url=${encodeURIComponent(u)}`, `https://r.jina.ai/${u}`];
     const rs = await Promise.allSettled(mexcAssets.map(async a => {
-      const sym = metaFor(a).sym, mult = multFor(a);
+      const sym = metaFor(a).sym;
       const target = `https://api.mexc.com/api/v3/ticker/price?symbol=${encodeURIComponent(sym)}`;
       let raw = null;
       for (const url of proxies(target)) {
@@ -358,7 +358,7 @@ async function refreshPrices() {
         } catch (e) { /* try next proxy */ }
       }
       if (!(raw > 0)) throw new Error(sym);
-      STATE.livePrices[a] = { price: raw * mult, changePct: null, prevClose: null, ts: now, raw, mult };
+      STATE.livePrices[a] = { price: raw, changePct: null, prevClose: null, ts: now };
       liveCount++;
     }));
     if (rs.some(r => r.status === "rejected")) errors.push("MEXC");
@@ -608,7 +608,7 @@ function renderHoldings(P) {
     const rows = sortRows(g.rows, VIEW.holdSort).map(o => {
       const pdot = o.status === "live" ? "live" : "manual";
       const mult = multFor(o.asset);
-      const multTag = (metaFor(o.asset).src === "mexc" && mult !== 1 && o.status === "live") ? ` <span class="muted" style="font-size:.7rem" title="MEXC ${metaFor(o.asset).sym} price ×${mult}">×${mult}</span>` : "";
+      const multTag = (mult !== 1 && o.status === "live" && metaFor(o.asset).src !== "manual") ? ` <span class="muted" style="font-size:.7rem" title="${metaFor(o.asset).sym} × ${mult}">×${mult}</span>` : "";
       return `<tr>
         <td>${assetCell(o)}</td>
         <td class="num">${fmtQty(o.qty)}</td>
@@ -741,6 +741,7 @@ function tradeModal(editIdx = null) {
             <option value="manual">Manual price</option>
           </select>
           <input id="f_sym" placeholder="ticker / id / pair" style="flex:1">
+          <span class="muted" style="font-size:.85rem;align-self:center">×</span><input id="f_mult" type="number" step="any" value="1" title="Multiplier — scale the feed price (e.g. track SPY × 0.0505)" style="width:90px">
         </div>
         <div class="hint" id="f_srchint"></div>
       </div>
@@ -773,7 +774,7 @@ function tradeModal(editIdx = null) {
   ["f_qty", "f_price", "f_fee", "f_ccy", "f_fx", "f_side"].forEach(id => { $("#" + id, m).oninput = calc; $("#" + id, m).onchange = calc; });
   $("#f_ccy", m).addEventListener("change", () => { $("#f_settleccy", m).textContent = $("#f_ccy", m).value; });
   // auto-set type from known asset
-  const symHint = s => ({ finnhub: "US ticker, e.g. AAPL", coingecko: "CoinGecko id, e.g. bitcoin, solana, ripple", mexc: "MEXC pair, e.g. NOWONUSDT", manual: "no feed — set the price in ⚙ Settings" }[s] || "");
+  const symHint = s => ({ finnhub: "US ticker (e.g. AAPL). Foreign index ETF? Use a US proxy like SPY and set × to scale.", coingecko: "CoinGecko id, e.g. bitcoin, solana, ripple", mexc: "MEXC pair, e.g. NOWONUSDT", manual: "no feed — set the price in ⚙ Settings" }[s] || "");
   const defSym = (a, s) => s === "finnhub" ? a.toUpperCase() : s === "coingecko" ? a.toLowerCase() : s === "mexc" ? a.toUpperCase() + "USDT" : "";
   const updateSrcBox = () => {
     const a = $("#f_asset", m).value.trim();
@@ -782,8 +783,8 @@ function tradeModal(editIdx = null) {
     if (!a || known) { box.style.display = "none"; if (known) $("#f_type", m).value = metaFor(a).cls === "crypto" ? "Crypto" : "Stock"; return; }
     box.style.display = "";
     const reg = (STATE.assetMeta || {})[a];
-    if (reg) { $("#f_src", m).value = reg.src || "manual"; $("#f_sym", m).value = reg.sym || ""; }
-    else { const s = $("#f_type", m).value === "Crypto" ? "coingecko" : "finnhub"; $("#f_src", m).value = s; $("#f_sym", m).value = defSym(a, s); }
+    if (reg) { $("#f_src", m).value = reg.src || "manual"; $("#f_sym", m).value = reg.sym || ""; $("#f_mult", m).value = reg.mult || 1; }
+    else { const s = $("#f_type", m).value === "Crypto" ? "coingecko" : "finnhub"; $("#f_src", m).value = s; $("#f_sym", m).value = defSym(a, s); $("#f_mult", m).value = 1; }
     $("#f_srchint", m).textContent = symHint($("#f_src", m).value);
   };
   $("#f_asset", m).oninput = updateSrcBox;
@@ -810,7 +811,8 @@ function tradeModal(editIdx = null) {
     if (!ASSET_META[asset]) {   // new/user asset → remember its class + price feed
       STATE.assetMeta = STATE.assetMeta || {};
       STATE.assetMeta[asset] = { cls: rec.type === "Crypto" ? "crypto" : "stock",
-        src: $("#f_src", m).value, sym: $("#f_sym", m).value.trim() || undefined };
+        src: $("#f_src", m).value, sym: $("#f_sym", m).value.trim() || undefined,
+        mult: parseFloat($("#f_mult", m).value) || 1 };
     }
     if (editIdx != null) STATE.trades[editIdx] = rec; else STATE.trades.push(rec);
     syncTradeCash(rec);
