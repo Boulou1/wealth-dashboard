@@ -1096,20 +1096,23 @@ function csvCash() {
   const rows = [...(STATE.cash || [])].sort((a, b) => a.date < b.date ? -1 : a.date > b.date ? 1 : 0).map(e => [esc(e.date), esc(kl[e.kind] || e.kind), esc(e.ccy), esc(e.amount), esc(e.note || "")].join(","));
   return ["Date,Transaction,Currency,Amount,Note", ...rows].join("\n");
 }
+const ghShaCache = {};   // path -> last known sha, so we don't rely on a (possibly stale) GET
 async function ghPutFile(path, contentStr, message) {
   const branch = ghCfg().branch || "main";
-  let sha = await ghSha(path, branch);
+  let sha = ghShaCache[path] || await ghSha(path, branch);
   for (let attempt = 0; attempt < 6; attempt++) {
     try {
-      await ghApi("PUT", `contents/${encodeURIComponent(path)}`, { message, content: b64enc(contentStr), sha: sha || undefined, branch });
+      const res = await ghApi("PUT", `contents/${encodeURIComponent(path)}`, { message, content: b64enc(contentStr), sha: sha || undefined, branch });
+      if (res && res.content && res.content.sha) ghShaCache[path] = res.content.sha;   // remember the new sha for next write
       return;
     } catch (e) {
       const msg = String(e.message);
-      // On a conflict, GitHub reports the current sha in the message ("... does not match <sha>").
+      // On a conflict, GitHub reports the current sha in the message ("... does not match <sha>"). Use it.
       if ((msg.startsWith("409") || msg.startsWith("422")) && attempt < 5) {
         const m = msg.match(/does not match ([0-9a-f]{7,40})/);
         sha = m ? m[1] : await ghSha(path, branch);
-        await new Promise(r => setTimeout(r, 400 * (attempt + 1)));   // let a concurrent writer settle
+        ghShaCache[path] = sha;
+        await new Promise(r => setTimeout(r, 300 * (attempt + 1)));   // let a concurrent writer settle
         continue;
       }
       throw e;
