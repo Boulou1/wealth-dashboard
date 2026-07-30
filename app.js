@@ -62,6 +62,7 @@ function defaultState() {
     manualPrices: seed.manualPrices ? { ...seed.manualPrices } : {},
     livePrices: {},                        // asset -> {price, changePct, prevClose, ts}
     cash: [],                              // ledger: {date, ccy, amount(signed), kind, note, tradeId?, grp?}
+    interest: [],                          // {date, kind:'received'|'paid', ccy, amount, note, source}
     assetMeta: {},                         // user asset registry: asset -> {cls, src, sym}
     fxEURUSD: seed.fxEURUSD || 1.10,
     settings: { finnhubKey: "", multipliers: {} },
@@ -106,6 +107,16 @@ function cashBalances() {
   return b;
 }
 const totalCashUSD = () => { const b = cashBalances(); return Object.keys(b).reduce((s, c) => s + ccyToUSD(b[c], c), 0); };
+
+/* ---- Interest ledger: {date, kind:"received"|"paid", ccy, amount(+ve), note, source} ---- */
+function interestTotals() {
+  let received = 0, paid = 0;
+  for (const e of (STATE.interest || [])) {
+    const usd = ccyToUSD(Math.abs(e.amount), e.ccy || "USD");
+    if (e.kind === "paid") paid += usd; else received += usd;
+  }
+  return { received, paid, net: received - paid };
+}
 const uid = () => "t" + Date.now().toString(36) + Math.random().toString(36).slice(2, 7);
 function nativeTotal(t) {   // cost/proceeds in the trade's own currency, incl. fee
   const gross = Math.abs(t.qty) * t.price;
@@ -438,6 +449,14 @@ function renderKPIs(P) {
     `<span class="chip ${cls(stk.upl)}">${money(stk.upl, { sign: true })}</span>`);
   card("Crypto", money(cry.mv),
     `<span class="chip ${cls(cry.upl)}">${money(cry.upl, { sign: true })}</span>`);
+
+  const I = interestTotals();
+  if (I.received || I.paid) {
+    card("Interest Received", `<span class="pos">${money(I.received, { sign: true })}</span>`,
+      `<span class="muted">earned on savings</span>`);
+    card("Interest Paid", `<span class="neg">-${money(I.paid)}</span>`,
+      `<span class="muted">net ${money(I.net, { sign: true })}</span>`);
+  }
 }
 
 /* ============================ Cash panel ============================ */
@@ -467,6 +486,7 @@ function renderCash(P) {
         <button class="btn" id="cashWithdraw">Withdraw</button>
         <button class="btn" id="cashConvert">Convert</button>
         <button class="btn" id="cashSet">Set balance</button>
+        <button class="btn" id="cashInterest">% Interest</button>
       </div>
     </div>
     <div class="cash-bals">${chips}</div>
@@ -476,6 +496,7 @@ function renderCash(P) {
   $("#cashWithdraw", box).onclick = () => cashModal("withdraw");
   $("#cashConvert", box).onclick = () => cashModal("convert");
   $("#cashSet", box).onclick = () => cashModal("adjust");
+  $("#cashInterest", box).onclick = interestModal;
 }
 
 function renderAllocation(P) {
@@ -839,6 +860,52 @@ function deleteCash(i) {
   saveState(); render(); toast("Cash entry removed");
 }
 
+function interestModal() {
+  const today = new Date().toISOString().slice(0, 10);
+  const I = interestTotals();
+  const rows = [...(STATE.interest || [])].map((e, i) => ({ e, i }))
+    .sort((a, b) => a.e.date < b.e.date ? 1 : a.e.date > b.e.date ? -1 : 0);
+  const m = el("div", "modal");
+  m.innerHTML = `<h3>Interest <button class="x">&times;</button></h3>
+    <div class="cash-bals" style="margin-bottom:12px">
+      <div class="cash-chip"><span class="cc">RECEIVED</span><span class="cv num pos">${money(I.received)}</span></div>
+      <div class="cash-chip"><span class="cc">PAID</span><span class="cv num neg">${money(I.paid)}</span></div>
+      <div class="cash-chip"><span class="cc">NET</span><span class="cv num ${cls(I.net)}">${money(I.net, { sign: true })}</span></div>
+    </div>
+    <div class="form-grid">
+      <div class="field"><label>Date</label><input type="date" id="i_date" value="${today}"></div>
+      <div class="field"><label>Type</label><select id="i_kind"><option value="received">Received (earned)</option><option value="paid">Paid (loan)</option></select></div>
+      <div class="field"><label>Currency</label><select id="i_ccy">${CCYS.map(c => `<option${c === "USD" ? " selected" : ""}>${c}</option>`).join("")}</select></div>
+      <div class="field"><label>Amount</label><input id="i_amt" type="number" step="any" placeholder="0.00"></div>
+      <div class="field full"><label>Note</label><input id="i_note" placeholder="e.g. Nexo savings interest"></div>
+    </div>
+    <div class="modal-actions"><button class="btn primary" id="i_add">＋ Add entry</button></div>
+    ${rows.length ? `<div class="settings-row"><div class="info"><div class="t" style="margin-top:12px">History (${rows.length})</div></div></div>
+      <div class="cash-list" style="max-height:230px;overflow:auto">${rows.map(({ e, i }) => `<div class="cash-tx">
+        <span class="k k-${e.kind === "paid" ? "withdraw" : "deposit"}">${e.kind === "paid" ? "Paid" : "Received"}</span>
+        <span class="tn">${e.note || ""}${e.source ? ` <span class="muted">(${e.source})</span>` : ""}</span>
+        <span class="td muted">${e.date}</span>
+        <span class="ta num ${e.kind === "paid" ? "neg" : "pos"}">${moneyIn(Math.abs(e.amount), e.ccy || "USD", 2)}</span>
+        <button class="cash-del" data-intdel="${i}" title="Delete">${ICON.trash}</button>
+      </div>`).join("")}</div>` : `<div class="muted" style="font-size:.85rem;padding:8px 0">No interest logged yet.</div>`}
+    <div class="modal-actions"><button class="btn" id="i_close">Close</button></div>`;
+  const back = openModal(m); const close = () => back.remove();
+  m.querySelector(".x").onclick = close; $("#i_close", m).onclick = close;
+  $("#i_add", m).onclick = () => {
+    const amt = Math.abs(parseFloat($("#i_amt", m).value));
+    if (!amt) return toast("Enter an amount", true);
+    const kind = $("#i_kind", m).value;
+    STATE.interest = STATE.interest || [];
+    STATE.interest.push({ date: $("#i_date", m).value, kind, ccy: $("#i_ccy", m).value, amount: amt, note: $("#i_note", m).value.trim() || (kind === "paid" ? "Loan interest" : "Interest earned") });
+    saveState(); render(); close(); toast(`Interest ${kind} logged`);
+  };
+}
+function deleteInterest(i) {
+  const e = (STATE.interest || [])[i]; if (!e) return;
+  if (!confirm(`Delete this interest entry?\n\n${e.date} · ${e.kind} · ${moneyIn(Math.abs(e.amount), e.ccy || "USD", 2)}`)) return;
+  STATE.interest.splice(i, 1); saveState(); render(); toast("Interest entry removed");
+}
+
 function cashModal(kind) {
   const today = new Date().toISOString().slice(0, 10);
   const bal = cashBalances();
@@ -1013,6 +1080,18 @@ function buildCSV() {
   [...(STATE.cash || [])].sort(byDate).forEach(e =>
     lines.push([esc(e.date), esc(kindLabel[e.kind] || e.kind), esc(e.ccy), esc(e.amount), esc(e.note || "")].join(",")));
 
+  // --- Interest ---
+  if ((STATE.interest || []).length) {
+    lines.push("", "INTEREST");
+    lines.push(["Date", "Type", "Currency", "Amount", "Note"].join(","));
+    [...STATE.interest].sort(byDate).forEach(e =>
+      lines.push([esc(e.date), esc(e.kind === "paid" ? "Paid" : "Received"), esc(e.ccy || "USD"), esc(e.amount), esc(e.note || "")].join(",")));
+    const I = interestTotals();
+    lines.push(["", "TOTAL RECEIVED (USD)", "", Math.round(I.received * 100) / 100, ""].join(","));
+    lines.push(["", "TOTAL PAID (USD)", "", Math.round(I.paid * 100) / 100, ""].join(","));
+    lines.push(["", "NET (USD)", "", Math.round(I.net * 100) / 100, ""].join(","));
+  }
+
   // --- Current cash balances ---
   const bal = cashBalances();
   lines.push("", "CASH BALANCES");
@@ -1032,7 +1111,7 @@ function exportCSV() {
 }
 function exportData() {
   const data = { version: 1, exported: new Date().toISOString(), trades: STATE.trades,
-    snapshots: STATE.snapshots, cash: STATE.cash, assetMeta: STATE.assetMeta, manualPrices: STATE.manualPrices, fxEURUSD: STATE.fxEURUSD };
+    snapshots: STATE.snapshots, cash: STATE.cash, interest: STATE.interest, assetMeta: STATE.assetMeta, manualPrices: STATE.manualPrices, fxEURUSD: STATE.fxEURUSD };
   const blob = new Blob([JSON.stringify(data, null, 1)], { type: "application/json" });
   const a = el("a"); a.href = URL.createObjectURL(blob);
   a.download = `wealth-backup-${new Date().toISOString().slice(0, 10)}.json`;
@@ -1048,6 +1127,7 @@ function importData(file, done) {
       STATE.trades = d.trades;
       if (Array.isArray(d.snapshots)) STATE.snapshots = d.snapshots;
       if (Array.isArray(d.cash)) STATE.cash = d.cash;
+      if (Array.isArray(d.interest)) STATE.interest = d.interest;
       if (d.assetMeta) STATE.assetMeta = d.assetMeta;
       if (d.manualPrices) STATE.manualPrices = d.manualPrices;
       if (d.fxEURUSD) STATE.fxEURUSD = d.fxEURUSD;
@@ -1067,7 +1147,7 @@ const b64dec = b => decodeURIComponent(escape(atob(b)));
 
 function backupPayload() {   // full snapshot; token lives outside STATE so it is never included
   return { version: 1, exported: new Date().toISOString(), trades: STATE.trades, snapshots: STATE.snapshots,
-    cash: STATE.cash, assetMeta: STATE.assetMeta, manualPrices: STATE.manualPrices,
+    cash: STATE.cash, interest: STATE.interest, assetMeta: STATE.assetMeta, manualPrices: STATE.manualPrices,
     settings: { finnhubKey: STATE.settings.finnhubKey || "", multipliers: STATE.settings.multipliers || {} },
     fxEURUSD: STATE.fxEURUSD };
 }
@@ -1147,6 +1227,7 @@ async function ghRestore() {
     STATE.trades = j.trades;
     if (Array.isArray(j.snapshots)) STATE.snapshots = j.snapshots;
     if (Array.isArray(j.cash)) STATE.cash = j.cash;
+    if (Array.isArray(j.interest)) STATE.interest = j.interest;
     if (j.assetMeta) STATE.assetMeta = j.assetMeta;
     if (j.manualPrices) STATE.manualPrices = j.manualPrices;
     if (j.settings) { STATE.settings.finnhubKey = j.settings.finnhubKey || STATE.settings.finnhubKey; STATE.settings.multipliers = j.settings.multipliers || STATE.settings.multipliers; }
@@ -1232,6 +1313,7 @@ function wireHeader() {
     const ed = e.target.closest("[data-edit]"); if (ed) return tradeModal(+ed.dataset.edit);
     const dl = e.target.closest("[data-del]"); if (dl) return deleteTrade(+dl.dataset.del);
     const cd = e.target.closest("[data-cashdel]"); if (cd) return deleteCash(+cd.dataset.cashdel);
+    const idl = e.target.closest("[data-intdel]"); if (idl) return deleteInterest(+idl.dataset.intdel);
   });
 }
 
@@ -1246,6 +1328,7 @@ function boot() {
   STATE.manualPrices = STATE.manualPrices || {};
   STATE.cash = STATE.cash || [];
   STATE.assetMeta = STATE.assetMeta || {};
+  STATE.interest = STATE.interest || [];
   saveLocal();   // migrations shouldn't trigger a backup on every load
   wireHeader();
   render();
