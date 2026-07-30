@@ -1063,41 +1063,16 @@ function settingsModal() {
 }
 
 function buildCSV() {
-  const esc = v => { v = v == null ? "" : String(v); return /[",\n]/.test(v) ? '"' + v.replace(/"/g, '""') + '"' : v; };
-  const byDate = (a, b) => a.date < b.date ? -1 : a.date > b.date ? 1 : 0;
-  const lines = [];
-
-  // --- Trades ---
-  const tcols = ["date", "asset", "type", "venue", "side", "qty", "price", "ccy", "fee", "totalUSD"];
-  lines.push("TRADES");
-  lines.push(["Date", "Asset", "Type", "Venue", "Side", "Quantity", "Price", "Currency", "Fee", "Total USD"].join(","));
-  [...(STATE.trades || [])].sort(byDate).forEach(t => lines.push(tcols.map(c => esc(t[c])).join(",")));
-
-  // --- Cash transactions ---
-  const kindLabel = { deposit: "Deposit", withdraw: "Withdraw", convert: "Convert", adjust: "Set balance", buy: "Buy", sell: "Sell" };
-  lines.push("", "CASH TRANSACTIONS");
-  lines.push(["Date", "Transaction", "Currency", "Amount", "Note"].join(","));
-  [...(STATE.cash || [])].sort(byDate).forEach(e =>
-    lines.push([esc(e.date), esc(kindLabel[e.kind] || e.kind), esc(e.ccy), esc(e.amount), esc(e.note || "")].join(",")));
-
-  // --- Interest ---
+  const lines = ["TRADES", csvTrades(), "", "CASH TRANSACTIONS", csvCash()];
   if ((STATE.interest || []).length) {
-    lines.push("", "INTEREST");
-    lines.push(["Date", "Type", "Currency", "Amount", "Note"].join(","));
-    [...STATE.interest].sort(byDate).forEach(e =>
-      lines.push([esc(e.date), esc(e.kind === "paid" ? "Paid" : "Received"), esc(e.ccy || "USD"), esc(e.amount), esc(e.note || "")].join(",")));
-    const I = interestTotals();
-    lines.push(["", "TOTAL RECEIVED (USD)", "", Math.round(I.received * 100) / 100, ""].join(","));
-    lines.push(["", "TOTAL PAID (USD)", "", Math.round(I.paid * 100) / 100, ""].join(","));
-    lines.push(["", "NET (USD)", "", Math.round(I.net * 100) / 100, ""].join(","));
+    const I = interestTotals(), r2 = n => Math.round(n * 100) / 100;
+    lines.push("", "INTEREST", csvInterest(),
+      `,TOTAL RECEIVED (USD),,${r2(I.received)},,`,
+      `,TOTAL PAID (USD),,${r2(I.paid)},,`,
+      `,NET (USD),,${r2(I.net)},,`);
   }
-
-  // --- Current cash balances ---
   const bal = cashBalances();
-  lines.push("", "CASH BALANCES");
-  lines.push("Currency,Balance");
-  CCYS.forEach(c => lines.push(`${c},${bal[c]}`));
-
+  lines.push("", "CASH BALANCES", "Currency,Balance", ...CCYS.map(c => `${c},${bal[c]}`));
   return lines.join("\n");
 }
 function exportCSV() {
@@ -1164,17 +1139,25 @@ async function ghSha(path, branch) {
   try { return (await ghApi("GET", `contents/${encodeURIComponent(path)}?ref=${encodeURIComponent(branch)}`)).sha; }
   catch (e) { return null; }   // 404 = file doesn't exist yet
 }
+const csvEsc = v => { v = v == null ? "" : String(v); return /[",\n]/.test(v) ? '"' + v.replace(/"/g, '""') + '"' : v; };
+const csvByDate = (a, b) => a.date < b.date ? -1 : a.date > b.date ? 1 : 0;
+const CASH_KIND = { deposit: "Deposit", withdraw: "Withdraw", convert: "Convert", adjust: "Set balance", buy: "Buy", sell: "Sell" };
+const CSV_HEADERS = {
+  trades: "Date,Asset,Type,Venue,Side,Quantity,Price,Currency,Fee,Total USD",
+  cash: "Date,Transaction,Currency,Amount,Note",
+  interest: "Date,Type,Currency,Amount,Note,Source",
+};
 function csvTrades() {
-  const esc = v => { v = v == null ? "" : String(v); return /[",\n]/.test(v) ? '"' + v.replace(/"/g, '""') + '"' : v; };
   const cols = ["date", "asset", "type", "venue", "side", "qty", "price", "ccy", "fee", "totalUSD"];
-  const rows = [...(STATE.trades || [])].sort((a, b) => a.date < b.date ? -1 : a.date > b.date ? 1 : 0).map(t => cols.map(c => esc(t[c])).join(","));
-  return ["Date,Asset,Type,Venue,Side,Quantity,Price,Currency,Fee,Total USD", ...rows].join("\n");
+  return [CSV_HEADERS.trades, ...[...(STATE.trades || [])].sort(csvByDate).map(t => cols.map(c => csvEsc(t[c])).join(","))].join("\n");
 }
 function csvCash() {
-  const esc = v => { v = v == null ? "" : String(v); return /[",\n]/.test(v) ? '"' + v.replace(/"/g, '""') + '"' : v; };
-  const kl = { deposit: "Deposit", withdraw: "Withdraw", convert: "Convert", adjust: "Set balance", buy: "Buy", sell: "Sell" };
-  const rows = [...(STATE.cash || [])].sort((a, b) => a.date < b.date ? -1 : a.date > b.date ? 1 : 0).map(e => [esc(e.date), esc(kl[e.kind] || e.kind), esc(e.ccy), esc(e.amount), esc(e.note || "")].join(","));
-  return ["Date,Transaction,Currency,Amount,Note", ...rows].join("\n");
+  return [CSV_HEADERS.cash, ...[...(STATE.cash || [])].sort(csvByDate)
+    .map(e => [e.date, CASH_KIND[e.kind] || e.kind, e.ccy, e.amount, e.note || ""].map(csvEsc).join(","))].join("\n");
+}
+function csvInterest() {
+  return [CSV_HEADERS.interest, ...[...(STATE.interest || [])].sort(csvByDate)
+    .map(e => [e.date, e.kind === "paid" ? "Paid" : "Received", e.ccy || "USD", e.amount, e.note || "", e.source || ""].map(csvEsc).join(","))].join("\n");
 }
 const ghShaCache = {};   // path -> last known sha, so we don't rely on a (possibly stale) GET
 async function ghPutFile(path, contentStr, message) {
@@ -1210,6 +1193,7 @@ async function ghBackup(silent) {
     await ghPutFile("data.json", JSON.stringify(backupPayload(), null, 1), `backup ${stamp}`);   // canonical (restore reads this)
     await ghPutFile("trades.csv", csvTrades(), `backup ${stamp}`);                                // readable table on GitHub
     await ghPutFile("cash.csv", csvCash(), `backup ${stamp}`);
+    if ((STATE.interest || []).length) await ghPutFile("interest.csv", csvInterest(), `backup ${stamp}`);
     c.lastBackup = Date.now(); setGhCfg(c);
     if (!silent) toast("Backed up to GitHub ✓ (data.json, trades.csv, cash.csv)");
     return true;
