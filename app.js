@@ -114,7 +114,8 @@ const totalCashUSD = () => { const b = cashBalances(); return Object.keys(b).red
    "annual" accounts hold accrued interest as `pending` until it's credited at year end (PEL-style). ---- */
 function savingsProject(acc, todayStr) {
   let bal = Number(acc.anchorBalance) || 0;
-  let pending = 0, contributed = 0, interest = 0;
+  let pending = Number(acc.anchorPending) || 0;   // interest already accrued but not yet credited (e.g. PEL)
+  let contributed = 0, interest = 0;
   const dayRate = (Number(acc.rate) || 0) / 365;
   const monthly = Number(acc.monthly) || 0;
   const cur = new Date((acc.anchorDate || todayStr) + "T00:00:00Z");
@@ -532,7 +533,7 @@ function renderSavings() {
       <div class="sav-meta">
         ${Number(a.monthly) ? `<span>+${moneyIn(Number(a.monthly), ccy, 0)}/mo on the 1st</span>` : `<span class="muted">no recurring</span>`}
         <span class="pos">+${moneyIn(r.interest, ccy, 2)} interest</span>
-        ${r.pending > 0.005 ? `<span class="muted">(${moneyIn(r.pending, ccy, 2)} accrued, credited at year end)</span>` : ""}
+        ${r.pending > 0.005 ? `<span class="muted">incl. ${moneyIn(r.pending, ccy, 2)} accrued — credited at year end</span>` : ""}
       </div>
       <div class="sav-actions">
         <button class="btn tiny" data-savedit="${i}">Edit</button>
@@ -565,6 +566,8 @@ function savingsModal(editIdx = null) {
         <option value="annual"${a.compound === "annual" ? " selected" : ""}>Yearly (at year end)</option></select></div>
       <div class="field"><label>Monthly deposit (on the 1st)</label><input id="s_monthly" type="number" step="any" value="${Number(a.monthly) || 0}"></div>
       <div class="field"><label>Balance today</label><input id="s_bal" type="number" step="any" value="${Number(a.anchorBalance) || 0}"></div>
+      <div class="field"><label>Interest already accrued</label><input id="s_pend" type="number" step="any" value="${Number(a.anchorPending) || 0}">
+        <div class="hint">For yearly accounts: interest earned but not yet credited</div></div>
       <div class="field full"><label>Balance as of date</label><input id="s_date" type="date" value="${a.anchorDate}">
         <div class="hint">The app projects forward from this date — deposits and interest are added automatically.</div></div>
       <div class="computed full"><span class="muted">Projected value today</span><span id="s_proj" class="num">—</span></div>
@@ -580,12 +583,13 @@ function savingsModal(editIdx = null) {
     ccy: $("#s_ccy", m).value, rate: (parseFloat($("#s_rate", m).value) || 0) / 100,
     compound: $("#s_comp", m).value, monthly: parseFloat($("#s_monthly", m).value) || 0,
     anchorDate: $("#s_date", m).value, anchorBalance: parseFloat($("#s_bal", m).value) || 0,
+    anchorPending: parseFloat($("#s_pend", m).value) || 0,
   });
   const preview = () => {
     const acc = read(), r = savingsProject(acc, new Date().toISOString().slice(0, 10));
     $("#s_proj", m).textContent = `${moneyIn(r.value, acc.ccy, 2)}  (+${moneyIn(r.interest, acc.ccy, 2)} interest)`;
   };
-  ["s_rate", "s_comp", "s_monthly", "s_bal", "s_date", "s_ccy"].forEach(id => { $("#" + id, m).oninput = preview; $("#" + id, m).onchange = preview; });
+  ["s_rate", "s_comp", "s_monthly", "s_bal", "s_pend", "s_date", "s_ccy"].forEach(id => { $("#" + id, m).oninput = preview; $("#" + id, m).onchange = preview; });
   preview();
   $("#s_ok", m).onclick = () => {
     const acc = read();
