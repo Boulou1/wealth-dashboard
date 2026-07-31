@@ -873,6 +873,7 @@ const ICON = {
   refresh: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 12a9 9 0 1 1-2.6-6.4M21 3v6h-6"/></svg>`,
   gear: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.6 1.6 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.6 1.6 0 0 0-2.7 1.1 2 2 0 1 1-4 0 1.6 1.6 0 0 0-2.7-1.1l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.6 1.6 0 0 0-1.1-2.7 2 2 0 1 1 0-4 1.6 1.6 0 0 0 1.1-2.7l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.6 1.6 0 0 0 1.8.3H9a1.6 1.6 0 0 0 1-1.5 2 2 0 1 1 4 0 1.6 1.6 0 0 0 1 1.5 1.6 1.6 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.6 1.6 0 0 0-.3 1.8V9a1.6 1.6 0 0 0 1.5 1 2 2 0 1 1 0 4 1.6 1.6 0 0 0-1.5 1Z"/></svg>`,
   lock: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="4" y="11" width="16" height="10" rx="2"/><path d="M8 11V7a4 4 0 0 1 8 0v4"/></svg>`,
+  print: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9V3h12v6"/><rect x="4" y="9" width="16" height="7" rx="2"/><path d="M8 16h8v5H8z"/></svg>`,
 };
 
 function openModal(node) {
@@ -1429,12 +1430,23 @@ function changePasscodeModal() {
   };
 }
 
+function printReport() {
+  const map = buildPriceMap(), P = computePortfolio(map);
+  const totalValue = P.totals.mv + totalCashUSD() + savingsTotals().usd;
+  const el2 = $("#printHead");
+  if (el2) el2.innerHTML = `<div class="ph-title">Wealth Report</div>
+    <div class="ph-sub">${new Date().toLocaleString("en-GB", { day: "2-digit", month: "long", year: "numeric", hour: "2-digit", minute: "2-digit" })}
+      &nbsp;·&nbsp; Total value <b>${money(totalValue)}</b> &nbsp;·&nbsp; ${VIEW.ccy}</div>`;
+  window.print();
+}
+
 /* ============================ Boot ============================ */
 function wireHeader() {
   $("#refreshBtn").onclick = refreshPrices;
   $("#addBtn").onclick = () => tradeModal();
   const addBtn3 = $("#addBtn3"); if (addBtn3) addBtn3.onclick = () => tradeModal();
   const csvBtn = $("#csvBtn"); if (csvBtn) csvBtn.onclick = exportCSV;
+  const pb = $("#printBtn"); if (pb) pb.onclick = printReport;
   $("#settingsBtn").onclick = settingsModal;
   $("#lockBtn").onclick = () => { sessionStorage.removeItem("unlocked"); location.reload(); };
   $$("#ccyToggle button").forEach(b => b.onclick = () => {

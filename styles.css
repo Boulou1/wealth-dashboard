@@ -315,3 +315,62 @@ footer.foot a { color: var(--muted); }
 .settle-row { display: flex; align-items: center; gap: 9px; padding: 10px 2px 0; font-size: .85rem; color: var(--muted); cursor: pointer; }
 .settle-row input { width: 16px; height: 16px; accent-color: var(--accent); cursor: pointer; }
 .settle-row b { color: var(--text); }
+
+/* ---------- Print / PDF ---------- */
+.print-only { display: none; }
+
+@media print {
+  /* flip the whole palette to light — dark UI prints badly and eats ink */
+  :root {
+    --bg: #fff; --bg-2: #fff;
+    --surface: #fff; --surface-2: #fbfbfc; --surface-hi: #f2f3f5;
+    --border: #d7dae0; --border-hi: #b9bdc6;
+    --text: #14161a; --muted: #5a6270; --faint: #7c8492;
+    --pos: #0a7f4f; --pos-dim: #e7f6ee;
+    --neg: #b3261e; --neg-dim: #fdecea;
+    --accent: #5b4bc4; --stock: #2563eb; --crypto: #b45309; --cash: #0f766e; --savings: #4f46e5;
+    --shadow: none;
+  }
+  html, body { background: #fff !important; background-image: none !important; color: #14161a; }
+  @page { size: A4; margin: 12mm; }
+
+  /* chrome we don't want on paper */
+  #gate, .controls, .status-line, .btn, .cash-del, .sav-actions,
+  .modal-back { display: none !important; }
+  /* only the trade log's trailing actions column — NOT the Return column of other tables */
+  #logBody td:last-child, table:has(#logBody) thead th:last-child { display: none !important; }
+  #app { display: block !important; }
+  .print-only { display: block !important; }
+
+  header.top { position: static; background: #fff !important; backdrop-filter: none; border-bottom: 1px solid var(--border); padding: 0 0 8px; margin-bottom: 6px; }
+  .brand .mark { box-shadow: none; }
+  .wrap { max-width: 100%; padding: 0; }
+
+  /* report title block */
+  #printHead { margin: 10px 0 14px; }
+  #printHead .ph-title { font-size: 1.4rem; font-weight: 700; letter-spacing: -.02em; }
+  #printHead .ph-sub { font-size: .8rem; color: var(--muted); margin-top: 2px; }
+
+  /* keep blocks intact across pages */
+  .panel, .kpi, .sav-card, .cash-chip, .alloc-bar, .htbl { break-inside: avoid; page-break-inside: avoid; box-shadow: none !important; }
+  .panel { border: 1px solid var(--border); margin-top: 10px; padding: 12px 14px; }
+  .grid-2 { grid-template-columns: 1fr 1fr; gap: 10px; }
+  .kpis { gap: 8px; margin-top: 0; }
+  .kpi { padding: 10px 12px; border: 1px solid var(--border); }
+  .kpi .val { font-size: 1.15rem; }
+  .kpi.hero .val { font-size: 1.6rem; background: none !important; -webkit-text-fill-color: var(--text) !important; color: var(--text) !important; }
+
+  /* tables: show everything, no inner scrolling */
+  .table-scroll { overflow: visible !important; max-height: none !important; }
+  table.tbl { font-size: .68rem; width: 100%; }
+  .tbl th, .tbl td { padding: 3px 5px !important; }
+  .asset-badge { width: 20px; height: 20px; font-size: .55rem; }
+  .cash-list { max-height: none !important; overflow: visible !important; }
+
+  /* the trade log is long — give it its own page */
+  #logBody { font-size: .62rem; }
+  .panel:has(#logBody) { break-before: page; }
+
+  a { text-decoration: none; color: var(--text); }
+  footer.foot { margin-top: 14px; font-size: .62rem; color: var(--faint); }
+}
