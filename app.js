@@ -63,6 +63,7 @@ function defaultState() {
     livePrices: {},                        // asset -> {price, changePct, prevClose, ts}
     cash: [],                              // ledger: {date, ccy, amount(signed), kind, note, tradeId?, grp?}
     interest: [],                          // {date, kind:'received'|'paid', ccy, amount, note, source}
+    savings: [],                           // {id, name, ccy, rate, compound, monthly, anchorDate, anchorBalance}
     assetMeta: {},                         // user asset registry: asset -> {cls, src, sym}
     fxEURUSD: seed.fxEURUSD || 1.10,
     settings: { finnhubKey: "", multipliers: {} },
@@ -108,9 +109,49 @@ function cashBalances() {
 }
 const totalCashUSD = () => { const b = cashBalances(); return Object.keys(b).reduce((s, c) => s + ccyToUSD(b[c], c), 0); };
 
+/* ---- Savings accounts: {id, name, ccy, rate, compound:"daily"|"annual", monthly, anchorDate, anchorBalance} ----
+   Balance is projected forward from a known anchor: contributions land on the 1st, interest accrues daily.
+   "annual" accounts hold accrued interest as `pending` until it's credited at year end (PEL-style). ---- */
+function savingsProject(acc, todayStr) {
+  let bal = Number(acc.anchorBalance) || 0;
+  let pending = 0, contributed = 0, interest = 0;
+  const dayRate = (Number(acc.rate) || 0) / 365;
+  const monthly = Number(acc.monthly) || 0;
+  const cur = new Date((acc.anchorDate || todayStr) + "T00:00:00Z");
+  const end = new Date(todayStr + "T00:00:00Z");
+  let guard = 0;
+  while (cur < end && guard++ < 20000) {
+    cur.setUTCDate(cur.getUTCDate() + 1);
+    if (monthly && cur.getUTCDate() === 1) { bal += monthly; contributed += monthly; }
+    const i = bal * dayRate;
+    interest += i;
+    if (acc.compound === "daily") bal += i; else pending += i;
+    if (acc.compound !== "daily" && cur.getUTCMonth() === 0 && cur.getUTCDate() === 1) { bal += pending; pending = 0; }
+  }
+  return { balance: bal, pending, value: bal + pending, contributed, interest };
+}
+function savingsRows() {
+  const today = new Date().toISOString().slice(0, 10);
+  return (STATE.savings || []).map(a => ({ acc: a, ...savingsProject(a, today) }));
+}
+function savingsTotals() {
+  let usd = 0, interest = 0, contributed = 0;
+  for (const r of savingsRows()) {
+    usd += ccyToUSD(r.value, r.acc.ccy || "EUR");
+    interest += ccyToUSD(r.interest, r.acc.ccy || "EUR");
+    contributed += ccyToUSD(r.contributed, r.acc.ccy || "EUR");
+  }
+  return { usd, interest, contributed };
+}
+function nextFirstOfMonth() {
+  const d = new Date(); d.setUTCDate(1); d.setUTCMonth(d.getUTCMonth() + 1);
+  return d.toISOString().slice(0, 10);
+}
+
 /* ---- Interest ledger: {date, kind:"received"|"paid", ccy, amount(+ve), note, source} ---- */
 function interestTotals() {
-  let received = 0, paid = 0;
+  let received = typeof savingsTotals === "function" ? savingsTotals().interest : 0;   // savings accrual counts as earned
+  let paid = 0;
   for (const e of (STATE.interest || [])) {
     const usd = ccyToUSD(Math.abs(e.amount), e.ccy || "USD");
     if (e.kind === "paid") paid += usd; else received += usd;
@@ -401,6 +442,7 @@ function render() {
   const P = computePortfolio(map);
   renderKPIs(P);
   renderCash(P);
+  renderSavings();
   renderAllocation(P);
   renderSparkline();
   renderHoldings(P);
@@ -412,7 +454,8 @@ function render() {
 function renderKPIs(P) {
   const t = P.totals;
   const cashUSD = totalCashUSD();
-  const totalValue = t.mv + cashUSD;
+  const savUSD = savingsTotals().usd;
+  const totalValue = t.mv + cashUSD + savUSD;
   const totalPL = t.upl + t.realizedAll;
   const box = $("#kpis");
   box.innerHTML = "";
@@ -425,7 +468,7 @@ function renderKPIs(P) {
 
   const dayChip = t.day ? `<span class="chip ${cls(t.day)}">${t.day > 0 ? "▲" : "▼"} ${money(Math.abs(t.day))} today</span>` : "";
   card("Total Value", money(totalValue),
-    `<span class="muted">assets ${money(t.mv)} · cash ${money(cashUSD)}</span>`, true);
+    `<span class="muted">assets ${money(t.mv)} · cash ${money(cashUSD)}${savUSD ? ` · savings ${money(savUSD)}` : ""}</span>`, true);
 
   card("Assets", money(t.mv),
     `${dayChip} <span class="muted">cost ${money(t.cost)}</span>`);
@@ -434,6 +477,12 @@ function renderKPIs(P) {
   const parts = CCYS.filter(c => Math.abs(bal[c]) > 0.005).map(c => moneyIn(bal[c], c, 0));
   card("Cash", money(cashUSD),
     `<span class="muted">${parts.length ? parts.join(" · ") : "no cash yet — add it below"}</span>`);
+
+  if (savUSD) {
+    const sr = savingsRows();
+    card("Savings", money(savUSD),
+      `<span class="muted">${sr.length} account${sr.length === 1 ? "" : "s"} · ${money(savingsTotals().interest)} interest</span>`);
+  }
 
   card("Unrealized P&L", `<span class="${cls(t.upl)}">${money(t.upl, { sign: true })}</span>`,
     `<span class="chip ${cls(t.upl)}">${pct(t.cost ? t.upl / t.cost : 0)}</span>`);
@@ -457,6 +506,98 @@ function renderKPIs(P) {
     card("Interest Paid", `<span class="neg">-${money(I.paid)}</span>`,
       `<span class="muted">net ${money(I.net, { sign: true })}</span>`);
   }
+}
+
+/* ============================ Savings panel ============================ */
+function renderSavings() {
+  const box = $("#savingsPanel"); if (!box) return;
+  const rows = savingsRows();
+  const T = savingsTotals();
+  if (!rows.length) {
+    box.innerHTML = `<div class="panel-head"><h2>Savings</h2>
+      <button class="btn primary" id="savAdd">＋ Add account</button></div>
+      <div class="muted" style="font-size:.85rem;padding:6px 0">No savings accounts yet — add a PEL, Livret, or Revolut savings pocket.</div>`;
+    $("#savAdd", box).onclick = () => savingsModal();
+    return;
+  }
+  const cards = rows.map((r, i) => {
+    const a = r.acc, ccy = a.ccy || "EUR";
+    const compLabel = a.compound === "daily" ? "daily" : "annual";
+    return `<div class="sav-card">
+      <div class="sav-top">
+        <span class="sav-name">${a.name}</span>
+        <span class="sav-rate">${(Number(a.rate) * 100).toFixed(2)}%<span class="muted"> ${compLabel}</span></span>
+      </div>
+      <div class="sav-val num">${moneyIn(r.value, ccy, 2)}</div>
+      <div class="sav-meta">
+        ${Number(a.monthly) ? `<span>+${moneyIn(Number(a.monthly), ccy, 0)}/mo on the 1st</span>` : `<span class="muted">no recurring</span>`}
+        <span class="pos">+${moneyIn(r.interest, ccy, 2)} interest</span>
+        ${r.pending > 0.005 ? `<span class="muted">(${moneyIn(r.pending, ccy, 2)} accrued, credited at year end)</span>` : ""}
+      </div>
+      <div class="sav-actions">
+        <button class="btn tiny" data-savedit="${i}">Edit</button>
+        <button class="btn tiny" data-savdel="${i}">Delete</button>
+      </div>
+    </div>`;
+  }).join("");
+  box.innerHTML = `<div class="panel-head"><h2>Savings <span class="tag">${money(T.usd)}</span></h2>
+      <button class="btn primary" id="savAdd">＋ Add account</button></div>
+    <div class="sav-grid">${cards}</div>
+    <div class="muted" style="font-size:.78rem;margin-top:12px">
+      Balances project forward automatically: contributions post on the 1st, interest accrues daily.
+      Next contribution: <b>${nextFirstOfMonth()}</b>.
+    </div>`;
+  $("#savAdd", box).onclick = () => savingsModal();
+}
+
+function savingsModal(editIdx = null) {
+  const a = editIdx != null ? STATE.savings[editIdx]
+    : { name: "", ccy: "EUR", rate: 0.02, compound: "daily", monthly: 0,
+        anchorDate: new Date().toISOString().slice(0, 10), anchorBalance: 0 };
+  const m = el("div", "modal");
+  m.innerHTML = `<h3>${editIdx != null ? "Edit" : "Add"} savings account <button class="x">&times;</button></h3>
+    <div class="form-grid">
+      <div class="field"><label>Name</label><input id="s_name" value="${(a.name || "").replace(/"/g, "&quot;")}" placeholder="PEL, Revolut Savings…"></div>
+      <div class="field"><label>Currency</label><select id="s_ccy">${CCYS.map(c => `<option${c === (a.ccy || "EUR") ? " selected" : ""}>${c}</option>`).join("")}</select></div>
+      <div class="field"><label>Interest rate (% per year)</label><input id="s_rate" type="number" step="any" value="${(Number(a.rate) * 100).toFixed(3).replace(/0+$/, "").replace(/\.$/, "")}"></div>
+      <div class="field"><label>Interest paid</label><select id="s_comp">
+        <option value="daily"${a.compound === "daily" ? " selected" : ""}>Daily (compounds)</option>
+        <option value="annual"${a.compound === "annual" ? " selected" : ""}>Yearly (at year end)</option></select></div>
+      <div class="field"><label>Monthly deposit (on the 1st)</label><input id="s_monthly" type="number" step="any" value="${Number(a.monthly) || 0}"></div>
+      <div class="field"><label>Balance today</label><input id="s_bal" type="number" step="any" value="${Number(a.anchorBalance) || 0}"></div>
+      <div class="field full"><label>Balance as of date</label><input id="s_date" type="date" value="${a.anchorDate}">
+        <div class="hint">The app projects forward from this date — deposits and interest are added automatically.</div></div>
+      <div class="computed full"><span class="muted">Projected value today</span><span id="s_proj" class="num">—</span></div>
+    </div>
+    <div class="modal-actions">
+      <button class="btn" id="s_cancel">Cancel</button>
+      <button class="btn primary" id="s_ok">${editIdx != null ? "Save changes" : "Add account"}</button>
+    </div>`;
+  const back = openModal(m); const close = () => back.remove();
+  m.querySelector(".x").onclick = close; $("#s_cancel", m).onclick = close;
+  const read = () => ({
+    id: a.id || uid(), name: $("#s_name", m).value.trim() || "Savings",
+    ccy: $("#s_ccy", m).value, rate: (parseFloat($("#s_rate", m).value) || 0) / 100,
+    compound: $("#s_comp", m).value, monthly: parseFloat($("#s_monthly", m).value) || 0,
+    anchorDate: $("#s_date", m).value, anchorBalance: parseFloat($("#s_bal", m).value) || 0,
+  });
+  const preview = () => {
+    const acc = read(), r = savingsProject(acc, new Date().toISOString().slice(0, 10));
+    $("#s_proj", m).textContent = `${moneyIn(r.value, acc.ccy, 2)}  (+${moneyIn(r.interest, acc.ccy, 2)} interest)`;
+  };
+  ["s_rate", "s_comp", "s_monthly", "s_bal", "s_date", "s_ccy"].forEach(id => { $("#" + id, m).oninput = preview; $("#" + id, m).onchange = preview; });
+  preview();
+  $("#s_ok", m).onclick = () => {
+    const acc = read();
+    STATE.savings = STATE.savings || [];
+    if (editIdx != null) STATE.savings[editIdx] = acc; else STATE.savings.push(acc);
+    saveState(); render(); close(); toast(editIdx != null ? "Account updated" : "Savings account added");
+  };
+}
+function deleteSavings(i) {
+  const a = (STATE.savings || [])[i]; if (!a) return;
+  if (!confirm(`Delete savings account "${a.name}"?`)) return;
+  STATE.savings.splice(i, 1); saveState(); render(); toast("Account removed");
 }
 
 /* ============================ Cash panel ============================ */
@@ -501,7 +642,8 @@ function renderCash(P) {
 
 function renderAllocation(P) {
   const stk = P.byClass.stock.mv, cry = P.byClass.crypto.mv, cash = Math.max(totalCashUSD(), 0);
-  const tot = stk + cry + cash;
+  const sav = Math.max(savingsTotals().usd, 0);
+  const tot = stk + cry + cash + sav;
   const donut = $("#donut");
   if (!tot) { donut.innerHTML = `<div class="empty">Nothing to show yet — add a trade or some cash.</div>`; return; }
 
@@ -510,6 +652,7 @@ function renderAllocation(P) {
     { nm: "Stocks & ETFs", v: stk, color: "var(--stock)" },
     { nm: "Crypto", v: cry, color: "var(--crypto)" },
     { nm: "Cash", v: cash, color: "var(--cash)" },
+    { nm: "Savings", v: sav, color: "var(--savings)" },
   ].filter(s => s.v > 0);
   let off = 0;
   const circles = segs.map(s => {
@@ -545,6 +688,7 @@ function renderAllocation(P) {
   const items = [...P.open].sort((a, b) => b.mv - a.mv).slice(0, 8)
     .map(o => ({ nm: o.asset, v: o.mv, color: o.cls === "crypto" ? "var(--crypto)" : "var(--stock)" }));
   if (cash > 0) items.push({ nm: "Cash", v: cash, color: "var(--cash)" });
+  if (sav > 0) items.push({ nm: "Savings", v: sav, color: "var(--savings)" });
   items.sort((a, b) => b.v - a.v);
   bars.innerHTML = items.map(o => `<div class="alloc-bar">
       <div class="top"><span>${o.nm}</span><span class="muted">${money(o.v)} · ${(o.v / tot * 100).toFixed(1)}%</span></div>
@@ -1086,7 +1230,7 @@ function exportCSV() {
 }
 function exportData() {
   const data = { version: 1, exported: new Date().toISOString(), trades: STATE.trades,
-    snapshots: STATE.snapshots, cash: STATE.cash, interest: STATE.interest, assetMeta: STATE.assetMeta, manualPrices: STATE.manualPrices, fxEURUSD: STATE.fxEURUSD };
+    snapshots: STATE.snapshots, cash: STATE.cash, interest: STATE.interest, savings: STATE.savings, assetMeta: STATE.assetMeta, manualPrices: STATE.manualPrices, fxEURUSD: STATE.fxEURUSD };
   const blob = new Blob([JSON.stringify(data, null, 1)], { type: "application/json" });
   const a = el("a"); a.href = URL.createObjectURL(blob);
   a.download = `wealth-backup-${new Date().toISOString().slice(0, 10)}.json`;
@@ -1103,6 +1247,7 @@ function importData(file, done) {
       if (Array.isArray(d.snapshots)) STATE.snapshots = d.snapshots;
       if (Array.isArray(d.cash)) STATE.cash = d.cash;
       if (Array.isArray(d.interest)) STATE.interest = d.interest;
+      if (Array.isArray(d.savings)) STATE.savings = d.savings;
       if (d.assetMeta) STATE.assetMeta = d.assetMeta;
       if (d.manualPrices) STATE.manualPrices = d.manualPrices;
       if (d.fxEURUSD) STATE.fxEURUSD = d.fxEURUSD;
@@ -1122,7 +1267,7 @@ const b64dec = b => decodeURIComponent(escape(atob(b)));
 
 function backupPayload() {   // full snapshot; token lives outside STATE so it is never included
   return { version: 1, exported: new Date().toISOString(), trades: STATE.trades, snapshots: STATE.snapshots,
-    cash: STATE.cash, interest: STATE.interest, assetMeta: STATE.assetMeta, manualPrices: STATE.manualPrices,
+    cash: STATE.cash, interest: STATE.interest, savings: STATE.savings, assetMeta: STATE.assetMeta, manualPrices: STATE.manualPrices,
     settings: { finnhubKey: STATE.settings.finnhubKey || "", multipliers: STATE.settings.multipliers || {} },
     fxEURUSD: STATE.fxEURUSD };
 }
@@ -1212,6 +1357,7 @@ async function ghRestore() {
     if (Array.isArray(j.snapshots)) STATE.snapshots = j.snapshots;
     if (Array.isArray(j.cash)) STATE.cash = j.cash;
     if (Array.isArray(j.interest)) STATE.interest = j.interest;
+    if (Array.isArray(j.savings)) STATE.savings = j.savings;
     if (j.assetMeta) STATE.assetMeta = j.assetMeta;
     if (j.manualPrices) STATE.manualPrices = j.manualPrices;
     if (j.settings) { STATE.settings.finnhubKey = j.settings.finnhubKey || STATE.settings.finnhubKey; STATE.settings.multipliers = j.settings.multipliers || STATE.settings.multipliers; }
@@ -1298,6 +1444,8 @@ function wireHeader() {
     const dl = e.target.closest("[data-del]"); if (dl) return deleteTrade(+dl.dataset.del);
     const cd = e.target.closest("[data-cashdel]"); if (cd) return deleteCash(+cd.dataset.cashdel);
     const idl = e.target.closest("[data-intdel]"); if (idl) return deleteInterest(+idl.dataset.intdel);
+    const se = e.target.closest("[data-savedit]"); if (se) return savingsModal(+se.dataset.savedit);
+    const sd = e.target.closest("[data-savdel]"); if (sd) return deleteSavings(+sd.dataset.savdel);
   });
 }
 
@@ -1313,6 +1461,7 @@ function boot() {
   STATE.cash = STATE.cash || [];
   STATE.assetMeta = STATE.assetMeta || {};
   STATE.interest = STATE.interest || [];
+  STATE.savings = STATE.savings || [];
   saveLocal();   // migrations shouldn't trigger a backup on every load
   wireHeader();
   render();

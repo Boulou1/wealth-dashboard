@@ -21,6 +21,7 @@
   --stock:         #60a5fa;
   --crypto:        #fbbf24;
   --cash:          #2dd4bf;
+  --savings:       #818cf8;
   --shadow:        0 12px 40px rgba(0, 0, 0, 0.45);
   --radius:        18px;
   --radius-sm:     11px;
@@ -279,6 +280,17 @@ table.tbl tfoot td { font-weight: 700; border-top: 1px solid var(--border-hi); b
 
 footer.foot { text-align: center; color: var(--faint); font-size: .74rem; margin-top: 40px; }
 footer.foot a { color: var(--muted); }
+
+/* ---------- Savings ---------- */
+.sav-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(230px, 1fr)); gap: 12px; }
+.sav-card { background: var(--surface-2); border: 1px solid var(--border); border-radius: 12px; padding: 14px 16px; }
+.sav-top { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; }
+.sav-name { font-weight: 650; font-size: .92rem; }
+.sav-rate { font-size: .78rem; font-weight: 650; color: var(--savings); white-space: nowrap; }
+.sav-val { font-size: 1.35rem; font-weight: 750; letter-spacing: -.02em; margin: 6px 0 4px; }
+.sav-meta { display: flex; flex-direction: column; gap: 2px; font-size: .76rem; color: var(--muted); }
+.sav-actions { display: flex; gap: 6px; margin-top: 10px; }
+.btn.tiny { padding: 3px 10px; font-size: .74rem; }
 
 /* ---------- Cash ---------- */
 .cash-bals { display: flex; gap: 12px; flex-wrap: wrap; margin-bottom: 16px; }
