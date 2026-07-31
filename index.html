@@ -10,7 +10,7 @@
   <meta http-equiv="Expires" content="0">
   <title>Wealth</title>
   <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>💎</text></svg>">
-  <link rel="stylesheet" href="styles.css?v=17">
+  <link rel="stylesheet" href="styles.css?v=18">
 </head>
 <body>
 
@@ -41,7 +41,7 @@
         </div>
         <button class="btn icon" id="refreshBtn" title="Refresh live prices"></button>
         <button class="btn primary" id="addBtn"></button>
-        <button class="btn icon" id="printBtn" title="Print / Save as PDF"></button>
+        <button class="btn" id="printBtn" title="Print / Save as PDF"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:15px;height:15px"><path d="M6 9V3h12v6"/><rect x="4" y="9" width="16" height="7" rx="2"/><path d="M8 16h8v5H8z"/></svg> PDF</button>
         <button class="btn icon" id="settingsBtn" title="Settings"></button>
         <button class="btn icon" id="lockBtn" title="Lock"></button>
       </div>
@@ -110,17 +110,17 @@
   </div>
 
   <script src="data.js"></script>
-  <script src="app.js?v=17"></script>
+  <script src="app.js?v=18"></script>
   <script>
     // inject header icons after app.js defines ICON
     window.addEventListener("DOMContentLoaded", () => {
       const set = () => {
         if (typeof ICON === "undefined") return setTimeout(set, 30);
-        document.getElementById("refreshBtn").innerHTML = ICON.refresh;
-        document.getElementById("addBtn").innerHTML = ICON.plus + " Add trade";
-        document.getElementById("printBtn").innerHTML = ICON.print;
-        document.getElementById("settingsBtn").innerHTML = ICON.gear;
-        document.getElementById("lockBtn").innerHTML = ICON.lock;
+        const put = (id, html) => { const n = document.getElementById(id); if (n) n.innerHTML = html; };
+        put("refreshBtn", ICON.refresh);
+        put("addBtn", ICON.plus + " Add trade");
+        put("settingsBtn", ICON.gear);
+        put("lockBtn", ICON.lock);
       };
       set();
     });
