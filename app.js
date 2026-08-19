@@ -1484,6 +1484,7 @@ function csvInterest() {
   return [CSV_HEADERS.interest, ...[...(STATE.interest || [])].sort(csvByDate)
     .map(e => [e.date, e.kind === "paid" ? "Paid" : "Received", e.ccy || "USD", e.amount, e.note || "", e.source || ""].map(csvEsc).join(","))].join("\n");
 }
+let D_EXPORT_STAMP = null;      // `exported` value of whatever we last pushed/pulled
 const ghShaCache = {};   // path -> last known sha, so we don't rely on a (possibly stale) GET
 async function ghPutFile(path, contentStr, message) {
   const branch = ghCfg().branch || "main";
@@ -1515,11 +1516,12 @@ async function ghBackup(silent) {
   ghBusy = true;
   try {
     const stamp = new Date().toISOString();
-    await ghPutFile("data.json", JSON.stringify(backupPayload(), null, 1), `backup ${stamp}`);   // canonical (restore reads this)
+    const payload = backupPayload(); D_EXPORT_STAMP = payload.exported;
+    await ghPutFile("data.json", JSON.stringify(payload, null, 1), `backup ${stamp}`);   // canonical (restore reads this)
     await ghPutFile("trades.csv", csvTrades(), `backup ${stamp}`);                                // readable table on GitHub
     await ghPutFile("cash.csv", csvCash(), `backup ${stamp}`);
     if ((STATE.interest || []).length) await ghPutFile("interest.csv", csvInterest(), `backup ${stamp}`);
-    c.lastBackup = Date.now(); setGhCfg(c);
+    c.lastBackup = Date.now(); c.syncedExport = D_EXPORT_STAMP; setGhCfg(c);
     if (!silent) toast("Backed up to GitHub ✓ (data.json, trades.csv, cash.csv)");
     return true;
   } catch (e) { toast("GitHub backup failed: " + e.message, true); return false; }
@@ -1543,6 +1545,9 @@ async function ghRestore() {
     if (j.manualPrices) STATE.manualPrices = j.manualPrices;
     if (j.settings) { STATE.settings.finnhubKey = j.settings.finnhubKey || STATE.settings.finnhubKey; STATE.settings.multipliers = j.settings.multipliers || STATE.settings.multipliers; }
     if (j.fxEURUSD) STATE.fxEURUSD = j.fxEURUSD;
+    D_EXPORT_STAMP = j.exported || null;
+    const c2 = ghCfg(); c2.syncedExport = D_EXPORT_STAMP; setGhCfg(c2);
+    const b = $("#syncBanner"); if (b) b.remove();
     saveLocal(); render(); refreshPrices();   // just pulled from the repo — don't immediately push it back
     toast(`Restored ${STATE.trades.length} trades from GitHub ✓`);
   } catch (e) { toast("Restore failed: " + e.message, true); }
@@ -1664,6 +1669,29 @@ function boot() {
   refreshPrices();   // fetch live on load
   // Fresh device with a saved token but no local data → pull the latest backup down.
   if (ghReady() && (!STATE.trades || !STATE.trades.length)) ghRestore();
+  else if (ghReady()) checkForNewerBackup();
+}
+
+/* If the private repo holds a NEWER backup than we last synced, surface a one-click pull.
+   (Previously the auto-restore only fired on an empty dataset, so repo-side updates went unseen.) */
+async function checkForNewerBackup() {
+  try {
+    const c = ghCfg();
+    const d = await ghApi("GET", `contents/data.json?ref=${encodeURIComponent(c.branch || "main")}`);
+    const j = JSON.parse(b64dec(d.content));
+    const remote = j.exported, seen = c.syncedExport;
+    if (!remote || remote === seen) return;
+    const el2 = el("div", "sync-banner");
+    el2.id = "syncBanner";
+    el2.innerHTML = `<span>☁️ A newer backup is available on GitHub
+        <span class="muted">(${new Date(remote).toLocaleString("en-GB", { day: "2-digit", month: "short", hour: "2-digit", minute: "2-digit" })}
+        · ${(j.trades || []).length} trades${(j.wallets || []).length ? `, ${(j.wallets).length} wallet(s)` : ""}${(j.savings || []).length ? `, ${(j.savings).length} savings` : ""})</span></span>
+      <span style="display:flex;gap:8px"><button class="btn primary" id="syncPull">⬇ Pull latest</button>
+      <button class="btn" id="syncDismiss">Later</button></span>`;
+    const main = $(".wrap"); if (main) main.insertBefore(el2, main.firstChild);
+    $("#syncPull", el2).onclick = async () => { $("#syncPull", el2).textContent = "Pulling…"; await ghRestore(); };
+    $("#syncDismiss", el2).onclick = () => { const cc = ghCfg(); cc.syncedExport = remote; setGhCfg(cc); el2.remove(); };
+  } catch (e) { /* offline or no access — stay quiet */ }
 }
 
 document.addEventListener("DOMContentLoaded", () => { initGate(); });
