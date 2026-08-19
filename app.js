@@ -518,7 +518,8 @@ function renderKPIs(P) {
   const savUSD = savingsTotals().usd;
   const walUSD = walletTotals().usd;
   const totalValue = t.mv + cashUSD + savUSD + walUSD;
-  const totalPL = t.upl + t.realizedAll;
+  const walPnl = walletTotals().hasPnl ? walletTotals().pnl : 0;
+  const totalPL = t.upl + t.realizedAll + walPnl;
   const box = $("#kpis");
   box.innerHTML = "";
 
@@ -560,7 +561,7 @@ function renderKPIs(P) {
     `<span class="muted">from ${P.realized.length} sold position${P.realized.length === 1 ? "" : "s"}</span>`);
 
   card("Total P&L", `<span class="${cls(totalPL)}">${money(totalPL, { sign: true })}</span>`,
-    `<span class="muted">unrealized + realized</span>`);
+    `<span class="muted">unrealized + realized${walPnl ? " + wallets" : ""}</span>`);
 
   const stk = P.byClass.stock, cry = P.byClass.crypto;
   card("Stocks & ETFs", money(stk.mv),
@@ -1609,7 +1610,7 @@ function changePasscodeModal() {
 
 function printReport() {
   const map = buildPriceMap(), P = computePortfolio(map);
-  const totalValue = P.totals.mv + totalCashUSD() + savingsTotals().usd;
+  const totalValue = P.totals.mv + totalCashUSD() + savingsTotals().usd + walletTotals().usd;
   const el2 = $("#printHead");
   if (el2) el2.innerHTML = `<div class="ph-title">Wealth Report</div>
     <div class="ph-sub">${new Date().toLocaleString("en-GB", { day: "2-digit", month: "long", year: "numeric", hour: "2-digit", minute: "2-digit" })}
