@@ -500,6 +500,7 @@ function refreshStatusText() {
 function render() {
   const map = buildPriceMap();
   const P = computePortfolio(map);
+  recordSnapshot(P);
   renderKPIs(P);
   renderCash(P);
   renderSavings();
@@ -875,6 +876,21 @@ function renderAllocation(P) {
     </div>`).join("");
 }
 
+/* Record today's true net worth (assets + cash + savings + wallets) once per day.
+   Intraday re-renders overwrite the same point, so the last read of the day wins. */
+function recordSnapshot(P) {
+  const total = P.totals.mv + totalCashUSD() + savingsTotals().usd + walletTotals().usd;
+  if (!(total > 0)) return;
+  const today = new Date().toISOString().slice(0, 10);
+  STATE.snapshots = STATE.snapshots || [];
+  const rec = { date: today, navUSD: total, stocks: P.byClass.stock.mv, crypto: P.byClass.crypto.mv,
+    cash: totalCashUSD(), savings: savingsTotals().usd, wallets: walletTotals().usd, auto: true };
+  const i = STATE.snapshots.findIndex(x => x.date === today);
+  if (i >= 0) {
+    if (Math.abs((STATE.snapshots[i].navUSD || 0) - total) > 1) { STATE.snapshots[i] = { ...STATE.snapshots[i], ...rec }; saveLocal(); }
+  } else { STATE.snapshots.push(rec); saveLocal(); }
+}
+
 function renderSparkline() {
   const wrap = $("#sparkPanel");
   const snaps = [...(STATE.snapshots || [])].filter(s => s.navUSD != null).sort((a, b) => a.date < b.date ? -1 : 1);
@@ -890,10 +906,10 @@ function renderSparkline() {
   const first = snaps[0].navUSD, last = snaps.at(-1).navUSD, delta = last - first;
   const up = delta >= 0;
   $("#sparkMeta").innerHTML = `
-    <div><div class="label muted" style="font-size:.72rem;text-transform:uppercase;letter-spacing:.05em">Net worth (snapshots)</div>
+    <div><div class="label muted" style="font-size:.72rem;text-transform:uppercase;letter-spacing:.05em">Net worth ${snaps.at(-1).auto ? `<span class="pdot live" style="margin-left:2px"></span>` : ""}</div>
     <div style="font-size:1.5rem;font-weight:700;letter-spacing:-.02em">${money(last)}</div></div>
     <div style="text-align:right"><span class="chip ${up ? "pos" : "neg"}">${up ? "▲" : "▼"} ${money(Math.abs(delta), { sign: false })}</span>
-    <div class="muted" style="font-size:.72rem;margin-top:4px">${snaps[0].date} → ${snaps.at(-1).date}</div></div>`;
+    <div class="muted" style="font-size:.72rem;margin-top:4px">${snaps[0].date} → ${snaps.at(-1).date} · ${snaps.length} points</div></div>`;
   $("#sparkSvg").innerHTML = `
     <svg width="100%" height="${H}" viewBox="0 0 ${W} ${H}" preserveAspectRatio="none">
       <defs><linearGradient id="sg" x1="0" x2="0" y1="0" y2="1">
