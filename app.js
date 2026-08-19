@@ -64,6 +64,7 @@ function defaultState() {
     cash: [],                              // ledger: {date, ccy, amount(signed), kind, note, tradeId?, grp?}
     interest: [],                          // {date, kind:'received'|'paid', ccy, amount, note, source}
     savings: [],                           // {id, name, ccy, rate, compound, monthly, anchorDate, anchorBalance}
+    wallets: [],                           // {id, name, address, kind:'hyperliquid'}
     assetMeta: {},                         // user asset registry: asset -> {cls, src, sym}
     fxEURUSD: seed.fxEURUSD || 1.10,
     settings: { finnhubKey: "", multipliers: {} },
@@ -108,6 +109,54 @@ function cashBalances() {
   return b;
 }
 const totalCashUSD = () => { const b = cashBalances(); return Object.keys(b).reduce((s, c) => s + ccyToUSD(b[c], c), 0); };
+
+/* ---- On-chain wallets (live). Hyperliquid: public API, CORS-open, no key needed. ---- */
+const HL_STABLE = /^(USDC|USDT0?|USDE|USDH|FEUSD|USDXL)$/i;
+async function fetchHyperliquid(addr) {
+  const post = body => fetchJSON("https://api.hyperliquid.xyz/info", {
+    method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+  const [perp, spot, mids, fills, funding] = await Promise.all([
+    post({ type: "clearinghouseState", user: addr }),
+    post({ type: "spotClearinghouseState", user: addr }),
+    post({ type: "allMids" }),
+    post({ type: "userFills", user: addr }).catch(() => []),
+    post({ type: "userFunding", user: addr, startTime: 0 }).catch(() => []),
+  ]);
+  const perps = parseFloat((perp && perp.marginSummary && perp.marginSummary.accountValue) || 0) || 0;
+  let spotUSD = 0; const holdings = [];
+  for (const b of ((spot && spot.balances) || [])) {
+    const q = parseFloat(b.total);
+    if (!(q > 0)) continue;
+    let px = HL_STABLE.test(b.coin) ? 1 : parseFloat((mids || {})[b.coin]);
+    if (!isFinite(px)) px = 0;                       // unknown token → don't invent value
+    spotUSD += q * px;
+    holdings.push({ coin: b.coin, qty: q, px, usd: q * px });
+  }
+  const positions = ((perp && perp.assetPositions) || []).map(a => ({
+    coin: (a.position || {}).coin, szi: parseFloat((a.position || {}).szi || 0),
+    upnl: parseFloat((a.position || {}).unrealizedPnl || 0),
+    entry: parseFloat((a.position || {}).entryPx || 0),
+  })).filter(p => p.szi);
+  // P&L straight from Hyperliquid: realized (closedPnl) net of fees and funding, plus open unrealized
+  const F = Array.isArray(fills) ? fills : [];
+  const realized = F.reduce((a, f) => a + (parseFloat(f.closedPnl) || 0), 0);
+  const fees = F.reduce((a, f) => a + (parseFloat(f.fee) || 0), 0);
+  const fundingNet = (Array.isArray(funding) ? funding : [])
+    .reduce((a, x) => a + (parseFloat(((x || {}).delta || {}).usdc) || 0), 0);
+  const upnl = positions.reduce((a, p) => a + (p.upnl || 0), 0);
+  const netPnl = realized - fees + fundingNet + upnl;
+  return { value: perps + spotUSD, perps, spot: spotUSD, holdings, positions,
+    realized, fees, funding: fundingNet, upnl, netPnl, fillCount: F.length, ts: Date.now() };
+}
+function walletTotals() {
+  let usd = 0, live = 0, pnl = 0, hasPnl = false;
+  for (const w of (STATE.wallets || [])) {
+    const d = (STATE.liveWallets || {})[w.address];
+    if (d && isFinite(d.value)) { usd += d.value; live++; if (isFinite(d.netPnl)) { pnl += d.netPnl; hasPnl = true; } }
+    else if (isFinite(w.manualValue)) usd += Number(w.manualValue);
+  }
+  return { usd, live, pnl, hasPnl, count: (STATE.wallets || []).length };
+}
 
 /* ---- Savings accounts: {id, name, ccy, rate, compound:"daily"|"annual", monthly, anchorDate, anchorBalance} ----
    Balance is projected forward from a known anchor: contributions land on the 1st, interest accrues daily.
@@ -364,7 +413,7 @@ async function refreshPrices() {
 
   // ---- FX: EUR→USD ----
   try {
-    const fx = await fetchJSON("https://api.frankfurter.app/latest?from=EUR&to=USD");
+    const fx = await fetchJSON("https://api.frankfurter.dev/v1/latest?base=EUR&symbols=USD");   // .app host lost CORS
     if (fx && fx.rates && fx.rates.USD) STATE.fxEURUSD = fx.rates.USD;
   } catch (e) {
     try {
@@ -418,6 +467,15 @@ async function refreshPrices() {
     if (rs.some(r => r.status === "rejected")) errors.push("MEXC");
   }
 
+  // ---- on-chain wallets (live, no key) ----
+  if ((STATE.wallets || []).length) {
+    STATE.liveWallets = STATE.liveWallets || {};
+    const rs = await Promise.allSettled((STATE.wallets).map(async w => {
+      if (w.kind === "hyperliquid") STATE.liveWallets[w.address] = await fetchHyperliquid(w.address);
+    }));
+    if (rs.some(r => r.status === "rejected")) errors.push("wallets");
+  }
+
   STATE.lastRefresh = now;
   saveLocal();   // local only — live prices aren't in the backup, so don't push (and don't race) on every refresh
   render();
@@ -445,6 +503,7 @@ function render() {
   renderKPIs(P);
   renderCash(P);
   renderSavings();
+  renderWallets();
   renderAllocation(P);
   renderSparkline();
   renderHoldings(P);
@@ -457,7 +516,8 @@ function renderKPIs(P) {
   const t = P.totals;
   const cashUSD = totalCashUSD();
   const savUSD = savingsTotals().usd;
-  const totalValue = t.mv + cashUSD + savUSD;
+  const walUSD = walletTotals().usd;
+  const totalValue = t.mv + cashUSD + savUSD + walUSD;
   const totalPL = t.upl + t.realizedAll;
   const box = $("#kpis");
   box.innerHTML = "";
@@ -470,7 +530,7 @@ function renderKPIs(P) {
 
   const dayChip = t.day ? `<span class="chip ${cls(t.day)}">${t.day > 0 ? "▲" : "▼"} ${money(Math.abs(t.day))} today</span>` : "";
   card("Total Value", money(totalValue),
-    `<span class="muted">assets ${money(t.mv)} · cash ${money(cashUSD)}${savUSD ? ` · savings ${money(savUSD)}` : ""}</span>`, true);
+    `<span class="muted">assets ${money(t.mv)} · cash ${money(cashUSD)}${savUSD ? ` · savings ${money(savUSD)}` : ""}${walUSD ? ` · wallets ${money(walUSD)}` : ""}</span>`, true);
 
   card("Assets", money(t.mv),
     `${dayChip} <span class="muted">cost ${money(t.cost)}</span>`);
@@ -484,6 +544,13 @@ function renderKPIs(P) {
     const sr = savingsRows();
     card("Savings", money(savUSD),
       `<span class="muted">${sr.length} account${sr.length === 1 ? "" : "s"} · ${money(savingsTotals().interest)} interest</span>`);
+  }
+
+  const WT = walletTotals();
+  if (WT.count) {
+    card("Wallets", money(WT.usd),
+      WT.hasPnl ? `<span class="chip ${cls(WT.pnl)}">${money(WT.pnl, { sign: true })}</span> <span class="muted">trading P&L</span>`
+                : `<span class="muted">${WT.count} wallet${WT.count === 1 ? "" : "s"}${WT.live ? " · live" : ""}</span>`);
   }
 
   card("Unrealized P&L", `<span class="${cls(t.upl)}">${money(t.upl, { sign: true })}</span>`,
@@ -508,6 +575,106 @@ function renderKPIs(P) {
     card("Interest Paid", `<span class="neg">-${money(I.paid)}</span>`,
       `<span class="muted">net ${money(I.net, { sign: true })}</span>`);
   }
+}
+
+/* ============================ Wallets panel ============================ */
+const shortAddr = a => a ? a.slice(0, 6) + "…" + a.slice(-4) : "";
+function renderWallets() {
+  const box = $("#walletsPanel"); if (!box) return;
+  const ws = STATE.wallets || [];
+  if (!ws.length) {
+    box.innerHTML = `<div class="panel-head"><h2>Wallets</h2>
+      <button class="btn primary" id="walAdd">＋ Add wallet</button></div>
+      <div class="muted" style="font-size:.85rem;padding:6px 0">Track an on-chain wallet live — Hyperliquid needs no API key.</div>`;
+    $("#walAdd", box).onclick = () => walletModal();
+    return;
+  }
+  const T = walletTotals();
+  const cards = ws.map((w, i) => {
+    const d = (STATE.liveWallets || {})[w.address];
+    const val = d && isFinite(d.value) ? d.value : (isFinite(w.manualValue) ? Number(w.manualValue) : null);
+    const dot = d ? `<span class="pdot live"></span>` : `<span class="pdot manual"></span>`;
+    const hold = d ? (d.holdings || []).filter(h => h.usd > 0.5)
+      .sort((a, b) => b.usd - a.usd).slice(0, 4)
+      .map(h => `${fmtQty(h.qty)} ${h.coin}`).join(" · ") : "";
+    const posHtml = !d ? ""
+      : ((d.positions || []).length
+        ? `<span>${d.positions.map(p => `<span class="${cls(p.upnl)}">${p.coin} ${p.szi > 0 ? "long" : "short"} ${money(p.upnl, { sign: true })}</span>`).join(" · ")}</span>`
+        : `<span class="muted">no open positions</span>`);
+    return `<div class="sav-card">
+      <div class="sav-top">
+        <span class="sav-name">${dot} ${w.name}</span>
+        <span class="sav-rate">${w.kind === "hyperliquid" ? "Hyperliquid" : w.kind}</span>
+      </div>
+      <div class="sav-val num">${val == null ? "—" : money(val)}
+        ${d && isFinite(d.netPnl) ? `<span class="wal-pnl ${cls(d.netPnl)}">${money(d.netPnl, { sign: true })}</span>` : ""}</div>
+      <div class="sav-meta">
+        ${d ? `<span>spot ${money(d.spot)} · perps ${money(d.perps)}</span>` : `<span class="muted">not fetched yet — hit ↻</span>`}
+        ${d && isFinite(d.realized) ? `<span class="muted">realized <span class="${cls(d.realized)}">${money(d.realized, { sign: true })}</span> · fees ${money(d.fees)} · funding <span class="${cls(d.funding)}">${money(d.funding, { sign: true })}</span>${d.upnl ? ` · unreal. <span class="${cls(d.upnl)}">${money(d.upnl, { sign: true })}</span>` : ""}</span>` : ""}
+        ${d && d.fillCount ? `<span class="muted">${d.fillCount} fills</span>` : ""}
+        ${hold ? `<span class="muted">${hold}</span>` : ""}
+        ${posHtml}
+        <span class="muted" title="${w.address}">${shortAddr(w.address)}</span>
+      </div>
+      <div class="sav-actions">
+        <button class="btn tiny" data-waledit="${i}">Edit</button>
+        <button class="btn tiny" data-waldel="${i}">Delete</button>
+      </div>
+    </div>`;
+  }).join("");
+  box.innerHTML = `<div class="panel-head"><h2>Wallets <span class="tag">${money(T.usd)}</span></h2>
+      <button class="btn primary" id="walAdd">＋ Add wallet</button></div>
+    <div class="sav-grid">${cards}</div>`;
+  $("#walAdd", box).onclick = () => walletModal();
+}
+
+function walletModal(editIdx = null) {
+  const w = editIdx != null ? STATE.wallets[editIdx] : { name: "", address: "", kind: "hyperliquid" };
+  const m = el("div", "modal");
+  m.innerHTML = `<h3>${editIdx != null ? "Edit" : "Add"} wallet <button class="x">&times;</button></h3>
+    <div class="form-grid">
+      <div class="field"><label>Label</label><input id="w_name" value="${(w.name || "").replace(/"/g, "&quot;")}" placeholder="Fun trading wallet"></div>
+      <div class="field"><label>Network</label><select id="w_kind">
+        <option value="hyperliquid"${w.kind === "hyperliquid" ? " selected" : ""}>Hyperliquid (live, no key)</option>
+        <option value="manual"${w.kind === "manual" ? " selected" : ""}>Manual value</option></select></div>
+      <div class="field full"><label>Address</label><input id="w_addr" value="${w.address || ""}" placeholder="0x…" spellcheck="false"></div>
+      <div class="field full" id="w_manualbox" style="display:${w.kind === "manual" ? "" : "none"}">
+        <label>Value (USD)</label><input id="w_val" type="number" step="any" value="${w.manualValue || 0}"></div>
+      <div class="computed full"><span class="muted">Live check</span><span id="w_test" class="num muted">—</span></div>
+    </div>
+    <div class="modal-actions">
+      <button class="btn" id="w_cancel">Cancel</button>
+      <button class="btn" id="w_check">Test</button>
+      <button class="btn primary" id="w_ok">${editIdx != null ? "Save changes" : "Add wallet"}</button>
+    </div>`;
+  const back = openModal(m); const close = () => back.remove();
+  m.querySelector(".x").onclick = close; $("#w_cancel", m).onclick = close;
+  $("#w_kind", m).onchange = () => { $("#w_manualbox", m).style.display = $("#w_kind", m).value === "manual" ? "" : "none"; };
+  $("#w_check", m).onclick = async () => {
+    const addr = $("#w_addr", m).value.trim();
+    if (!/^0x[0-9a-fA-F]{40}$/.test(addr)) return void ($("#w_test", m).textContent = "invalid address");
+    $("#w_test", m).textContent = "checking…";
+    try {
+      const d = await fetchHyperliquid(addr);
+      $("#w_test", m).innerHTML = `<span class="pos">${money(d.value)}</span> <span class="muted">spot ${money(d.spot)} · perps ${money(d.perps)}</span>`;
+    } catch (e) { $("#w_test", m).textContent = "failed: " + e.message; }
+  };
+  $("#w_ok", m).onclick = () => {
+    const addr = $("#w_addr", m).value.trim();
+    const kind = $("#w_kind", m).value;
+    if (kind !== "manual" && !/^0x[0-9a-fA-F]{40}$/.test(addr)) return toast("Enter a valid 0x address", true);
+    const rec = { id: w.id || uid(), name: $("#w_name", m).value.trim() || "Wallet", address: addr, kind };
+    if (kind === "manual") rec.manualValue = parseFloat($("#w_val", m).value) || 0;
+    STATE.wallets = STATE.wallets || [];
+    if (editIdx != null) STATE.wallets[editIdx] = rec; else STATE.wallets.push(rec);
+    saveState(); render(); close(); toast(editIdx != null ? "Wallet updated" : "Wallet added");
+    refreshPrices();
+  };
+}
+function deleteWallet(i) {
+  const w = (STATE.wallets || [])[i]; if (!w) return;
+  if (!confirm(`Stop tracking "${w.name}"?`)) return;
+  STATE.wallets.splice(i, 1); saveState(); render(); toast("Wallet removed");
 }
 
 /* ============================ Savings panel ============================ */
@@ -651,7 +818,8 @@ function renderCash(P) {
 function renderAllocation(P) {
   const stk = P.byClass.stock.mv, cry = P.byClass.crypto.mv, cash = Math.max(totalCashUSD(), 0);
   const sav = Math.max(savingsTotals().usd, 0);
-  const tot = stk + cry + cash + sav;
+  const wal = Math.max(walletTotals().usd, 0);
+  const tot = stk + cry + cash + sav + wal;
   const donut = $("#donut");
   if (!tot) { donut.innerHTML = `<div class="empty">Nothing to show yet — add a trade or some cash.</div>`; return; }
 
@@ -661,6 +829,7 @@ function renderAllocation(P) {
     { nm: "Crypto", v: cry, color: "var(--crypto)" },
     { nm: "Cash", v: cash, color: "var(--cash)" },
     { nm: "Savings", v: sav, color: "var(--savings)" },
+    { nm: "Wallets", v: wal, color: "var(--wallet)" },
   ].filter(s => s.v > 0);
   let off = 0;
   const circles = segs.map(s => {
@@ -697,6 +866,7 @@ function renderAllocation(P) {
     .map(o => ({ nm: o.asset, v: o.mv, color: o.cls === "crypto" ? "var(--crypto)" : "var(--stock)" }));
   if (cash > 0) items.push({ nm: "Cash", v: cash, color: "var(--cash)" });
   if (sav > 0) items.push({ nm: "Savings", v: sav, color: "var(--savings)" });
+  if (wal > 0) items.push({ nm: "Wallets", v: wal, color: "var(--wallet)" });
   items.sort((a, b) => b.v - a.v);
   bars.innerHTML = items.map(o => `<div class="alloc-bar">
       <div class="top"><span>${o.nm}</span><span class="muted">${money(o.v)} · ${(o.v / tot * 100).toFixed(1)}%</span></div>
@@ -1239,7 +1409,7 @@ function exportCSV() {
 }
 function exportData() {
   const data = { version: 1, exported: new Date().toISOString(), trades: STATE.trades,
-    snapshots: STATE.snapshots, cash: STATE.cash, interest: STATE.interest, savings: STATE.savings, assetMeta: STATE.assetMeta, manualPrices: STATE.manualPrices, fxEURUSD: STATE.fxEURUSD };
+    snapshots: STATE.snapshots, cash: STATE.cash, interest: STATE.interest, savings: STATE.savings, wallets: STATE.wallets, assetMeta: STATE.assetMeta, manualPrices: STATE.manualPrices, fxEURUSD: STATE.fxEURUSD };
   const blob = new Blob([JSON.stringify(data, null, 1)], { type: "application/json" });
   const a = el("a"); a.href = URL.createObjectURL(blob);
   a.download = `wealth-backup-${new Date().toISOString().slice(0, 10)}.json`;
@@ -1257,6 +1427,7 @@ function importData(file, done) {
       if (Array.isArray(d.cash)) STATE.cash = d.cash;
       if (Array.isArray(d.interest)) STATE.interest = d.interest;
       if (Array.isArray(d.savings)) STATE.savings = d.savings;
+      if (Array.isArray(d.wallets)) STATE.wallets = d.wallets;
       if (d.assetMeta) STATE.assetMeta = d.assetMeta;
       if (d.manualPrices) STATE.manualPrices = d.manualPrices;
       if (d.fxEURUSD) STATE.fxEURUSD = d.fxEURUSD;
@@ -1276,7 +1447,7 @@ const b64dec = b => decodeURIComponent(escape(atob(b)));
 
 function backupPayload() {   // full snapshot; token lives outside STATE so it is never included
   return { version: 1, exported: new Date().toISOString(), trades: STATE.trades, snapshots: STATE.snapshots,
-    cash: STATE.cash, interest: STATE.interest, savings: STATE.savings, assetMeta: STATE.assetMeta, manualPrices: STATE.manualPrices,
+    cash: STATE.cash, interest: STATE.interest, savings: STATE.savings, wallets: STATE.wallets, assetMeta: STATE.assetMeta, manualPrices: STATE.manualPrices,
     settings: { finnhubKey: STATE.settings.finnhubKey || "", multipliers: STATE.settings.multipliers || {} },
     fxEURUSD: STATE.fxEURUSD };
 }
@@ -1367,6 +1538,7 @@ async function ghRestore() {
     if (Array.isArray(j.cash)) STATE.cash = j.cash;
     if (Array.isArray(j.interest)) STATE.interest = j.interest;
     if (Array.isArray(j.savings)) STATE.savings = j.savings;
+    if (Array.isArray(j.wallets)) STATE.wallets = j.wallets;
     if (j.assetMeta) STATE.assetMeta = j.assetMeta;
     if (j.manualPrices) STATE.manualPrices = j.manualPrices;
     if (j.settings) { STATE.settings.finnhubKey = j.settings.finnhubKey || STATE.settings.finnhubKey; STATE.settings.multipliers = j.settings.multipliers || STATE.settings.multipliers; }
@@ -1466,6 +1638,8 @@ function wireHeader() {
     const idl = e.target.closest("[data-intdel]"); if (idl) return deleteInterest(+idl.dataset.intdel);
     const se = e.target.closest("[data-savedit]"); if (se) return savingsModal(+se.dataset.savedit);
     const sd = e.target.closest("[data-savdel]"); if (sd) return deleteSavings(+sd.dataset.savdel);
+    const we = e.target.closest("[data-waledit]"); if (we) return walletModal(+we.dataset.waledit);
+    const wd = e.target.closest("[data-waldel]"); if (wd) return deleteWallet(+wd.dataset.waldel);
   });
 }
 
@@ -1482,6 +1656,8 @@ function boot() {
   STATE.assetMeta = STATE.assetMeta || {};
   STATE.interest = STATE.interest || [];
   STATE.savings = STATE.savings || [];
+  STATE.wallets = STATE.wallets || [];
+  STATE.liveWallets = STATE.liveWallets || {};
   saveLocal();   // migrations shouldn't trigger a backup on every load
   wireHeader();
   render();

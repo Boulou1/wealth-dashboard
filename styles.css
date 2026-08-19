@@ -22,6 +22,7 @@
   --crypto:        #fbbf24;
   --cash:          #2dd4bf;
   --savings:       #818cf8;
+  --wallet:        #f472b6;
   --shadow:        0 12px 40px rgba(0, 0, 0, 0.45);
   --radius:        18px;
   --radius-sm:     11px;
@@ -374,3 +375,4 @@ footer.foot a { color: var(--muted); }
   a { text-decoration: none; color: var(--text); }
   footer.foot { margin-top: 14px; font-size: .62rem; color: var(--faint); }
 }
+.wal-pnl { font-size: .8rem; font-weight: 650; margin-left: 8px; letter-spacing: 0; }
