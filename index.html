@@ -10,7 +10,7 @@
   <meta http-equiv="Expires" content="0">
   <title>Wealth</title>
   <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>💎</text></svg>">
-  <link rel="stylesheet" href="styles.css?v=24">
+  <link rel="stylesheet" href="styles.css?v=25">
 </head>
 <body>
 
@@ -41,6 +41,7 @@
         </div>
         <button class="btn icon" id="refreshBtn" title="Refresh live prices"></button>
         <button class="btn primary" id="addBtn"></button>
+        <button class="btn" id="syncBtn" title="Hard refresh — re-pull everything from GitHub"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:15px;height:15px"><path d="M12 3v12"/><path d="m7 10 5 5 5-5"/><path d="M4 21h16"/></svg> Sync</button>
         <button class="btn" id="printBtn" title="Print / Save as PDF"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:15px;height:15px"><path d="M6 9V3h12v6"/><rect x="4" y="9" width="16" height="7" rx="2"/><path d="M8 16h8v5H8z"/></svg> PDF</button>
         <button class="btn icon" id="settingsBtn" title="Settings"></button>
         <button class="btn icon" id="lockBtn" title="Lock"></button>
@@ -50,13 +51,19 @@
 
     <main class="wrap">
       <div id="printHead" class="print-only"></div>
-      <section class="kpis" id="kpis"></section>
+      <section class="hero-grid">
+        <div class="panel hero-card" id="heroCard"></div>
+        <div class="panel hero-chart" id="sparkPanel">
+          <div class="spark-wrap">
+            <div class="spark-meta" id="sparkMeta"></div>
+            <div id="sparkSvg"></div>
+          </div>
+        </div>
+      </section>
 
-      <section class="panel" id="cashPanel"></section>
-
-      <section class="panel" id="savingsPanel"></section>
-
-      <section class="panel" id="walletsPanel"></section>
+      <section class="stats" id="stats"></section>
+      <section class="classes" id="classCards"></section>
+      <div id="movers"></div>
 
       <div class="grid-2">
         <div class="panel">
@@ -64,12 +71,12 @@
           <div id="donut"></div>
           <div class="alloc-bars" id="allocBars" style="margin-top:18px"></div>
         </div>
-        <div class="panel" id="sparkPanel">
-          <div class="spark-wrap">
-            <div class="spark-meta" id="sparkMeta"></div>
-            <div id="sparkSvg"></div>
-          </div>
-        </div>
+        <section class="panel" id="cashPanel"></section>
+      </div>
+
+      <div class="grid-2 even">
+        <section class="panel" id="savingsPanel"></section>
+        <section class="panel" id="walletsPanel"></section>
       </div>
 
       <div id="holdings"></div>
@@ -112,7 +119,7 @@
   </div>
 
   <script src="data.js"></script>
-  <script src="app.js?v=24"></script>
+  <script src="app.js?v=25"></script>
   <script>
     // inject header icons after app.js defines ICON
     window.addEventListener("DOMContentLoaded", () => {

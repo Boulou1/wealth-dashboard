@@ -51,7 +51,7 @@ const EPS = 1e-6;
 
 /* ============================ State ============================ */
 let STATE = null;   // { trades, snapshots, manualPrices, livePrices, fxEURUSD, settings }
-let VIEW = { ccy: "USD", holdSort: { key: "mv", dir: -1 }, closedSort: { key: "realized", dir: -1 } };
+let VIEW = { ccy: "USD", sparkRange: "1Y", holdSort: { key: "mv", dir: -1 }, closedSort: { key: "realized", dir: -1 } };
 
 function defaultState() {
   const seed = window.__SEED__ || {};
@@ -260,7 +260,9 @@ function toast(msg, isErr = false) {
   t.textContent = msg; t.className = "toast show" + (isErr ? " err" : "");
   clearTimeout(t._t); t._t = setTimeout(() => t.className = "toast", 2600);
 }
+const BADGE_OVERRIDE = { "TR Robo (ETF basket)": "ROBO" };
 const initials = (name) => {
+  if (BADGE_OVERRIDE[name]) return BADGE_OVERRIDE[name];
   const n = String(name).trim();
   if (/^[A-Za-z0-9.]{1,5}$/.test(n)) return n.toUpperCase();          // already a ticker: NOW, COIN, BTC
   const m = metaFor(name);
@@ -516,66 +518,79 @@ function render() {
 function renderKPIs(P) {
   const t = P.totals;
   const cashUSD = totalCashUSD();
-  const savUSD = savingsTotals().usd;
-  const walUSD = walletTotals().usd;
+  const ST = savingsTotals(), WT = walletTotals(), I = interestTotals();
+  const savUSD = ST.usd, walUSD = WT.usd;
   const totalValue = t.mv + cashUSD + savUSD + walUSD;
-  const walPnl = walletTotals().hasPnl ? walletTotals().pnl : 0;
+  const walPnl = WT.hasPnl ? WT.pnl : 0;
   const totalPL = t.upl + t.realizedAll + walPnl;
-  const box = $("#kpis");
-  box.innerHTML = "";
+  const dayPct = (t.mv - t.day) ? t.day / (t.mv - t.day) : 0;
 
-  const card = (label, valHtml, subHtml, hero) => {
-    const c = el("div", "kpi" + (hero ? " hero" : ""));
-    c.innerHTML = `<div class="label">${label}</div><div class="val">${valHtml}</div>${subHtml ? `<div class="sub">${subHtml}</div>` : ""}`;
-    box.appendChild(c);
-  };
+  /* ---- hero: total value + composition bar ---- */
+  const segs = [
+    { nm: "Stocks & ETFs", v: P.byClass.stock.mv, c: "var(--stock)" },
+    { nm: "Crypto", v: P.byClass.crypto.mv, c: "var(--crypto)" },
+    { nm: "Wallets", v: walUSD, c: "var(--wallet)" },
+    { nm: "Savings", v: savUSD, c: "var(--savings)" },
+    { nm: "Cash", v: cashUSD, c: "var(--cash)" },
+  ].filter(x => x.v > 0.5);
+  const segTot = segs.reduce((a, x) => a + x.v, 0) || 1;
+  $("#heroCard").innerHTML = `
+    <div>
+      <div class="label">Total value <span class="pdot live" style="margin-left:2px"></span></div>
+      <div class="val num">${money(totalValue)}</div>
+      <div class="hero-chips">
+        ${t.day ? `<span class="chip ${cls(t.day)}">${t.day > 0 ? "▲" : "▼"} ${money(Math.abs(t.day))} · ${pct(Math.abs(dayPct))} today</span>` : ""}
+        <span class="chip ${cls(totalPL)}">${money(totalPL, { sign: true })} all-time</span>
+      </div>
+    </div>
+    <div>
+      <div class="comp-bar">${segs.map(x => `<span style="width:${(x.v / segTot * 100).toFixed(2)}%;background:${x.c}" title="${x.nm}"></span>`).join("")}</div>
+      <div class="comp-legend">${segs.map(x => `<span class="cl"><span class="sw" style="background:${x.c}"></span>${x.nm} <b class="num">${money(x.v)}</b></span>`).join("")}</div>
+    </div>`;
 
-  const dayChip = t.day ? `<span class="chip ${cls(t.day)}">${t.day > 0 ? "▲" : "▼"} ${money(Math.abs(t.day))} today</span>` : "";
-  card("Total Value", money(totalValue),
-    `<span class="muted">assets ${money(t.mv)} · cash ${money(cashUSD)}${savUSD ? ` · savings ${money(savUSD)}` : ""}${walUSD ? ` · wallets ${money(walUSD)}` : ""}</span>`, true);
+  /* ---- stat tiles ---- */
+  const tiles = [];
+  const tile = (label, valHtml, sub) => tiles.push(`<div class="tile"><div class="label">${label}</div><div class="val num">${valHtml}</div>${sub ? `<div class="sub">${sub}</div>` : ""}</div>`);
+  tile("Today",
+    t.day ? `<span class="${cls(t.day)}">${money(t.day, { sign: true })}</span>` : `<span class="muted">—</span>`,
+    t.day ? `<span class="chip ${cls(t.day)}">${pct(dayPct)}</span> <span class="muted">live-priced assets</span>` : `<span class="muted">no live move yet</span>`);
+  tile("Total P&L", `<span class="${cls(totalPL)}">${money(totalPL, { sign: true })}</span>`,
+    `<span class="muted">U ${money(t.upl, { sign: true })} · R ${money(t.realizedAll, { sign: true })}${walPnl ? ` · W ${money(walPnl, { sign: true })}` : ""}</span>`);
+  tile("Unrealized", `<span class="${cls(t.upl)}">${money(t.upl, { sign: true })}</span>`,
+    `<span class="chip ${cls(t.upl)}">${pct(t.cost ? t.upl / t.cost : 0)}</span> <span class="muted">on ${money(t.cost)} cost</span>`);
+  tile("Realized", `<span class="${cls(t.realizedAll)}">${money(t.realizedAll, { sign: true })}</span>`,
+    `<span class="muted">${P.realized.length} sold position${P.realized.length === 1 ? "" : "s"}</span>`);
+  if (WT.count) tile("Wallet P&L", `<span class="${cls(walPnl)}">${money(walPnl, { sign: true })}</span>`,
+    `<span class="muted">Hyperliquid · live</span>`);
+  if (I.received || I.paid) tile("Net interest", `<span class="${cls(I.net)}">${money(I.net, { sign: true })}</span>`,
+    `<span class="muted"><span class="pos">+${money(I.received)}</span> · <span class="neg">−${money(I.paid)}</span></span>`);
+  $("#stats").innerHTML = tiles.join("");
 
-  card("Assets", money(t.mv),
-    `${dayChip} <span class="muted">cost ${money(t.cost)}</span>`);
-
+  /* ---- class tiles ---- */
   const bal = cashBalances();
-  const parts = CCYS.filter(c => Math.abs(bal[c]) > 0.005).map(c => moneyIn(bal[c], c, 0));
-  card("Cash", money(cashUSD),
-    `<span class="muted">${parts.length ? parts.join(" · ") : "no cash yet — add it below"}</span>`);
-
-  if (savUSD) {
-    const sr = savingsRows();
-    card("Savings", money(savUSD),
-      `<span class="muted">${sr.length} account${sr.length === 1 ? "" : "s"} · ${money(savingsTotals().interest)} interest</span>`);
-  }
-
-  const WT = walletTotals();
-  if (WT.count) {
-    card("Wallets", money(WT.usd),
-      WT.hasPnl ? `<span class="chip ${cls(WT.pnl)}">${money(WT.pnl, { sign: true })}</span> <span class="muted">trading P&L</span>`
-                : `<span class="muted">${WT.count} wallet${WT.count === 1 ? "" : "s"}${WT.live ? " · live" : ""}</span>`);
-  }
-
-  card("Unrealized P&L", `<span class="${cls(t.upl)}">${money(t.upl, { sign: true })}</span>`,
-    `<span class="chip ${cls(t.upl)}">${pct(t.cost ? t.upl / t.cost : 0)}</span>`);
-
-  card("Realized P&L", `<span class="${cls(t.realizedAll)}">${money(t.realizedAll, { sign: true })}</span>`,
-    `<span class="muted">from ${P.realized.length} sold position${P.realized.length === 1 ? "" : "s"}</span>`);
-
-  card("Total P&L", `<span class="${cls(totalPL)}">${money(totalPL, { sign: true })}</span>`,
-    `<span class="muted">unrealized + realized${walPnl ? " + wallets" : ""}</span>`);
-
+  const ccyStr = CCYS.filter(c => Math.abs(bal[c]) > 0.005).map(c => moneyIn(bal[c], c, 0)).join(" · ");
   const stk = P.byClass.stock, cry = P.byClass.crypto;
-  card("Stocks & ETFs", money(stk.mv),
-    `<span class="chip ${cls(stk.upl)}">${money(stk.upl, { sign: true })}</span>`);
-  card("Crypto", money(cry.mv),
-    `<span class="chip ${cls(cry.upl)}">${money(cry.upl, { sign: true })}</span>`);
+  const nStk = P.open.filter(o => o.cls === "stock").length, nCry = P.open.filter(o => o.cls === "crypto").length;
+  const cts = [];
+  const ct = (color, label, val, sub) => cts.push(`<div class="tile class-tile" style="--cc:${color}"><div class="label"><span class="dot-c"></span>${label}</div><div class="val num">${val}</div><div class="sub">${sub}</div></div>`);
+  ct("var(--stock)", "Stocks & ETFs", money(stk.mv), `<span class="chip ${cls(stk.upl)}">${money(stk.upl, { sign: true })}</span> <span class="muted">${nStk} positions</span>`);
+  ct("var(--crypto)", "Crypto", money(cry.mv), `<span class="chip ${cls(cry.upl)}">${money(cry.upl, { sign: true })}</span> <span class="muted">${nCry} positions</span>`);
+  if (WT.count) ct("var(--wallet)", "Wallets", money(walUSD),
+    WT.hasPnl ? `<span class="chip ${cls(WT.pnl)}">${money(WT.pnl, { sign: true })}</span> <span class="muted">live</span>` : `<span class="muted">${WT.count} wallet${WT.count === 1 ? "" : "s"}</span>`);
+  if ((STATE.savings || []).length) ct("var(--savings)", "Savings", money(savUSD),
+    `<span class="muted">${STATE.savings.length} accounts · <span class="pos">+${money(ST.interest)}</span> interest</span>`);
+  ct("var(--cash)", "Cash", money(cashUSD), `<span class="muted">${ccyStr || "—"}</span>`);
+  $("#classCards").innerHTML = cts.join("");
 
-  const I = interestTotals();
-  if (I.received || I.paid) {
-    card("Interest Received", `<span class="pos">${money(I.received, { sign: true })}</span>`,
-      `<span class="muted">earned on savings</span>`);
-    card("Interest Paid", `<span class="neg">-${money(I.paid)}</span>`,
-      `<span class="muted">net ${money(I.net, { sign: true })}</span>`);
+  /* ---- today's movers ---- */
+  const mv = P.open.filter(o => o.status === "live" && o.changePct != null && Math.abs(o.day) > 0.5);
+  const ups = mv.filter(o => o.day > 0).sort((a, b) => b.changePct - a.changePct).slice(0, 3);
+  const dns = mv.filter(o => o.day < 0).sort((a, b) => a.changePct - b.changePct).slice(0, 3);
+  const box = $("#movers");
+  if (!ups.length && !dns.length) { box.innerHTML = ""; }
+  else {
+    const chipHtml = o => `<span class="mover ${cls(o.day)}"><b>${initials(o.asset)}</b> ${pct(o.changePct / 100)} <span class="muted num">${money(o.day, { sign: true })}</span></span>`;
+    box.innerHTML = `<div class="panel movers"><span class="label">Today's movers</span>${[...ups, ...dns].map(chipHtml).join("")}</div>`;
   }
 }
 
@@ -874,6 +889,9 @@ function renderAllocation(P) {
       <div class="top"><span>${o.nm}</span><span class="muted">${money(o.v)} · ${(o.v / tot * 100).toFixed(1)}%</span></div>
       <div class="track"><div class="fill" style="width:${(o.v / tot * 100).toFixed(1)}%;background:${o.color}"></div></div>
     </div>`).join("");
+  const top = [...P.open].sort((a, b) => b.mv - a.mv)[0];
+  if (top && tot && top.mv / tot > 0.35)
+    bars.insertAdjacentHTML("beforeend", `<div class="conc-note">⚠︎ ${top.asset} is ${(top.mv / tot * 100).toFixed(0)}% of your wealth — concentrated.</div>`);
 }
 
 /* Record today's true net worth (assets + cash + savings + wallets) once per day.
@@ -893,33 +911,79 @@ function recordSnapshot(P) {
 
 function renderSparkline() {
   const wrap = $("#sparkPanel");
-  const snaps = [...(STATE.snapshots || [])].filter(s => s.navUSD != null).sort((a, b) => a.date < b.date ? -1 : 1);
-  if (snaps.length < 2) { wrap.classList.add("hidden"); return; }
+  const all = [...(STATE.snapshots || [])].filter(x => x.navUSD != null).sort((a, b) => a.date < b.date ? -1 : 1);
+  if (all.length < 2) { wrap.classList.add("hidden"); return; }
   wrap.classList.remove("hidden");
-  const vals = snaps.map(s => s.navUSD);
-  const min = Math.min(...vals), max = Math.max(...vals), pad = (max - min) * 0.12 || 1;
-  const W = 640, H = 120, lo = min - pad, hi = max + pad;
-  const x = i => (i / (snaps.length - 1)) * W;
-  const y = v => H - ((v - lo) / (hi - lo)) * H;
-  const pts = snaps.map((s, i) => `${x(i).toFixed(1)},${y(s.navUSD).toFixed(1)}`).join(" ");
-  const area = `0,${H} ${pts} ${W},${H}`;
-  const first = snaps[0].navUSD, last = snaps.at(-1).navUSD, delta = last - first;
-  const up = delta >= 0;
+  const DAY = 864e5, ts = x => new Date(x.date + "T00:00:00Z").getTime();
+  const nowT = ts(all.at(-1)), t0 = ts(all[0]);
+  const spans = { "3M": 91 * DAY, "1Y": 365 * DAY, "ALL": Infinity };
+  let range = VIEW.sparkRange || "1Y";
+  let startT = range === "ALL" ? t0 : Math.max(t0, nowT - spans[range]);
+  let pts = all.filter(x => ts(x) >= startT).map(x => ({ t: ts(x), v: x.navUSD, real: true }));
+  if (pts.length && t0 < startT) {                      // point interpolé au bord de la fenêtre
+    const i = all.findIndex(x => ts(x) >= startT);
+    if (i > 0) { const a = all[i - 1], b = all[i], f = (startT - ts(a)) / (ts(b) - ts(a) || 1);
+      pts.unshift({ t: startT, v: a.navUSD + (b.navUSD - a.navUSD) * f, real: false }); }
+  }
+  if (pts.length < 2) { range = "ALL"; VIEW.sparkRange = "ALL"; startT = t0; pts = all.map(x => ({ t: ts(x), v: x.navUSD, real: true })); }
+
+  const vals = pts.map(p => p.v), min = Math.min(...vals), max = Math.max(...vals), pad = (max - min) * 0.14 || 1;
+  const W = 680, H = 190, lo = min - pad, hi = max + pad;
+  const span = (pts.at(-1).t - pts[0].t) || 1;
+  const X = t => ((t - pts[0].t) / span) * W, Y = v => H - ((v - lo) / (hi - lo)) * H;
+  const P2 = pts.map(p => [X(p.t), Y(p.v)]);
+  let d = `M${P2[0][0].toFixed(1)},${P2[0][1].toFixed(1)}`;
+  for (let i = 0; i < P2.length - 1; i++) {             // Catmull-Rom → Bézier (courbe lissée)
+    const p0 = P2[Math.max(0, i - 1)], p1 = P2[i], p2 = P2[i + 1], p3 = P2[Math.min(P2.length - 1, i + 2)];
+    d += `C${(p1[0] + (p2[0] - p0[0]) / 6).toFixed(1)},${(p1[1] + (p2[1] - p0[1]) / 6).toFixed(1)} ${(p2[0] - (p3[0] - p1[0]) / 6).toFixed(1)},${(p2[1] - (p3[1] - p1[1]) / 6).toFixed(1)} ${p2[0].toFixed(1)},${p2[1].toFixed(1)}`;
+  }
+  const first = pts[0].v, last = pts.at(-1).v, delta = last - first, up = delta >= 0;
+  const col = up ? "var(--pos)" : "var(--neg)";
+  const dots = pts.filter(p => p.real).map(p =>
+    `<circle cx="${X(p.t).toFixed(1)}" cy="${Y(p.v).toFixed(1)}" r="2.8" fill="var(--bg-2)" stroke="${col}" stroke-width="1.6"></circle>`).join("");
+  const grid = [0.25, 0.5, 0.75].map(f => `<line x1="0" x2="${W}" y1="${(H * f).toFixed(1)}" y2="${(H * f).toFixed(1)}" stroke="rgba(255,255,255,.05)"></line>`).join("");
+  const segBtns = ["3M", "1Y", "ALL"].map(r => `<button data-range="${r}" class="${r === range ? "active" : ""}">${r === "ALL" ? "All" : r}</button>`).join("");
+  const fmtD = t => new Date(t).toISOString().slice(0, 10);
+
   $("#sparkMeta").innerHTML = `
-    <div><div class="label muted" style="font-size:.72rem;text-transform:uppercase;letter-spacing:.05em">Net worth ${snaps.at(-1).auto ? `<span class="pdot live" style="margin-left:2px"></span>` : ""}</div>
-    <div style="font-size:1.5rem;font-weight:700;letter-spacing:-.02em">${money(last)}</div></div>
-    <div style="text-align:right"><span class="chip ${up ? "pos" : "neg"}">${up ? "▲" : "▼"} ${money(Math.abs(delta), { sign: false })}</span>
-    <div class="muted" style="font-size:.72rem;margin-top:4px">${snaps[0].date} → ${snaps.at(-1).date} · ${snaps.length} points</div></div>`;
+    <div><div class="label muted" style="font-size:.72rem;text-transform:uppercase;letter-spacing:.07em;font-weight:650">Net worth <span class="pdot live" style="margin-left:2px"></span></div>
+      <div class="num" style="font-size:1.55rem;font-weight:750;letter-spacing:-.02em">${money(last)}</div>
+      <div style="margin-top:2px"><span class="chip ${up ? "pos" : "neg"}">${up ? "▲" : "▼"} ${money(Math.abs(delta))} · ${pct(Math.abs(first ? delta / first : 0))}</span></div></div>
+    <div style="text-align:right;display:flex;flex-direction:column;align-items:flex-end;gap:7px">
+      <div class="seg seg-mini" id="sparkRange">${segBtns}</div>
+      <div class="muted" style="font-size:.7rem">${fmtD(pts[0].t)} → ${all.at(-1).date} · ${pts.filter(p => p.real).length} points</div></div>`;
   $("#sparkSvg").innerHTML = `
-    <svg width="100%" height="${H}" viewBox="0 0 ${W} ${H}" preserveAspectRatio="none">
+    <svg id="sparkSvgEl" width="100%" height="${H}" viewBox="0 0 ${W} ${H}" preserveAspectRatio="none">
       <defs><linearGradient id="sg" x1="0" x2="0" y1="0" y2="1">
-        <stop offset="0" stop-color="${up ? "var(--pos)" : "var(--neg)"}" stop-opacity="0.35"/>
-        <stop offset="1" stop-color="${up ? "var(--pos)" : "var(--neg)"}" stop-opacity="0"/>
+        <stop offset="0" stop-color="${col}" stop-opacity="0.32"/>
+        <stop offset="1" stop-color="${col}" stop-opacity="0"/>
       </linearGradient></defs>
-      <polygon points="${area}" fill="url(#sg)"></polygon>
-      <polyline points="${pts}" fill="none" stroke="${up ? "var(--pos)" : "var(--neg)"}" stroke-width="2.5"
-        stroke-linejoin="round" stroke-linecap="round"></polyline>
-    </svg>`;
+      ${grid}
+      <path d="${d} L${W},${H} L0,${H} Z" fill="url(#sg)"></path>
+      <path d="${d}" fill="none" stroke="${col}" stroke-width="2.2" stroke-linejoin="round" stroke-linecap="round"></path>
+      ${dots}
+      <line id="sparkX" y1="0" y2="${H}" stroke="rgba(255,255,255,.22)" stroke-dasharray="3 3" visibility="hidden"></line>
+    </svg>
+    <div id="sparkTip" class="spark-tip hidden"></div>`;
+  $$("#sparkRange button").forEach(b => b.onclick = () => { VIEW.sparkRange = b.dataset.range; renderSparkline(); });
+
+  /* crosshair au survol : interpole la valeur à la date pointée */
+  const svg = $("#sparkSvgEl"), tip = $("#sparkTip"), xline = $("#sparkX");
+  svg.onmousemove = e => {
+    const r = svg.getBoundingClientRect();
+    const fx = Math.min(1, Math.max(0, (e.clientX - r.left) / r.width));
+    const t = pts[0].t + fx * span;
+    let i = pts.findIndex(p => p.t >= t); if (i <= 0) i = 1;
+    const a = pts[i - 1], b = pts[i] || a;
+    const v = a.v + (b.v - a.v) * ((t - a.t) / ((b.t - a.t) || 1));
+    xline.setAttribute("x1", (fx * W).toFixed(1)); xline.setAttribute("x2", (fx * W).toFixed(1));
+    xline.setAttribute("visibility", "visible");
+    tip.classList.remove("hidden");
+    tip.innerHTML = `<b class="num">${money(v)}</b><span>${fmtD(t)}</span>`;
+    const left = Math.min(r.width - 130, Math.max(0, e.clientX - r.left + 12));
+    tip.style.left = left + "px";
+  };
+  svg.onmouseleave = () => { tip.classList.add("hidden"); xline.setAttribute("visibility", "hidden"); };
 }
 
 function sortRows(rows, sort) {
@@ -957,6 +1021,7 @@ function renderHoldings(P) {
     { key: "qty", label: "Qty" },
     { key: "avg", label: "Avg Cost" },
     { key: "price", label: "Price" },
+    { key: "day", label: "Today" },
     { key: "mv", label: "Value" },
     { key: "upl", label: "Unreal. P&L" },
     { key: "ret", label: "Return" },
@@ -964,7 +1029,7 @@ function renderHoldings(P) {
   cont.innerHTML = "";
   for (const g of groups) {
     if (!g.rows.length) continue;
-    const sub = g.rows.reduce((s, o) => ({ mv: s.mv + o.mv, cost: s.cost + o.cost, upl: s.upl + o.upl }), { mv: 0, cost: 0, upl: 0 });
+    const sub = g.rows.reduce((s, o) => ({ mv: s.mv + o.mv, cost: s.cost + o.cost, upl: s.upl + o.upl, day: s.day + (o.day || 0) }), { mv: 0, cost: 0, upl: 0, day: 0 });
     const rows = sortRows(g.rows, VIEW.holdSort).map(o => {
       const pdot = o.status === "live" ? "live" : "manual";
       const mult = multFor(o.asset);
@@ -974,6 +1039,7 @@ function renderHoldings(P) {
         <td class="num">${fmtQty(o.qty)}</td>
         <td class="num muted">${fmtPrice(o.avg)}</td>
         <td class="num"><span class="price-tag"><span class="pdot ${pdot}"></span>${fmtPrice(o.price)}${multTag}</span></td>
+        <td class="num">${(o.status === "live" && o.changePct != null && o.day) ? `<span class="${cls(o.day)}">${money(o.day, { sign: true })}</span> <span class="muted" style="font-size:.72rem">${pct(o.changePct / 100)}</span>` : `<span class="muted">—</span>`}</td>
         <td class="num">${money(o.mv)}</td>
         <td class="num ${cls(o.upl)}">${money(o.upl, { sign: true })}</td>
         <td class="num ${cls(o.ret)}">${pct(o.ret)}</td>
@@ -987,6 +1053,7 @@ function renderHoldings(P) {
         <thead><tr>${sortableHead(cols, VIEW.holdSort, "hold")}</tr></thead>
         <tbody>${rows}</tbody>
         <tfoot><tr><td>Subtotal</td><td></td><td></td><td></td>
+          <td class="num ${cls(sub.day)}">${sub.day ? money(sub.day, { sign: true }) : ""}</td>
           <td class="num">${money(sub.mv)}</td>
           <td class="num ${cls(sub.upl)}">${money(sub.upl, { sign: true })}</td>
           <td class="num ${cls(sub.cost ? sub.upl / sub.cost : 0)}">${pct(sub.cost ? sub.upl / sub.cost : 0)}</td></tr></tfoot>
@@ -1641,6 +1708,11 @@ function wireHeader() {
   const addBtn3 = $("#addBtn3"); if (addBtn3) addBtn3.onclick = () => tradeModal();
   const csvBtn = $("#csvBtn"); if (csvBtn) csvBtn.onclick = exportCSV;
   const pb = $("#printBtn"); if (pb) pb.onclick = printReport;
+  const sb = $("#syncBtn"); if (sb) sb.onclick = async () => {
+    if (!ghReady()) { toast("Set up GitHub backup in Settings first", true); return settingsModal(); }
+    sb.disabled = true; const keep = sb.innerHTML; sb.innerHTML = "⟳ Syncing…";
+    try { await ghRestore(); } finally { sb.disabled = false; sb.innerHTML = keep; }
+  };
   $("#settingsBtn").onclick = settingsModal;
   $("#lockBtn").onclick = () => { sessionStorage.removeItem("unlocked"); location.reload(); };
   $$("#ccyToggle button").forEach(b => b.onclick = () => {
