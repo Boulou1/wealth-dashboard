@@ -245,6 +245,46 @@ function trackedQty(asset) {
   return q;
 }
 
+/* ---- Auto-log des conversions de staking liquide ----
+   Si la chaîne montre moins de SOL et du JitoSOL non suivi (valeurs qui se correspondent),
+   on écrit le swap tout seul dans le trade log. Basé sur le drift tracked-vs-onchain →
+   idempotent (une fois loggé, le drift disparaît), multi-appareils sans doublon. ---- */
+const LST_PAIRS = [["SOL", "JitoSOL"], ["SOL", "mSOL"], ["ETH", "stETH"], ["ETH", "wstETH"], ["ETH", "rETH"]];
+function autoReconcileLST() {
+  const pm = buildPriceMap();
+  const onchain = {}, onchainPx = {};
+  for (const w of (STATE.wallets || [])) {
+    const d = (STATE.liveWallets || {})[w.address];
+    if (!d || !d.chain) continue;
+    for (const h of (d.holdings || [])) {
+      onchain[h.coin] = (onchain[h.coin] || 0) + h.qty;
+      if (h.px > 0) onchainPx[h.coin] = h.px;
+    }
+  }
+  const px = c => ((pm[c] || {}).price) || onchainPx[c] || 0;
+  let logged = 0;
+  for (const [base, lst] of LST_PAIRS) {
+    if (!(lst in onchain)) continue;
+    const dBase = trackedQty(base) - (onchain[base] || 0);   // les books ont plus de base que la chaîne
+    const dLst = (onchain[lst] || 0) - trackedQty(lst);      // la chaîne a plus de LST que les books
+    const pB = px(base), pL = px(lst);
+    if (!(dBase > 0 && dLst > 0 && pB > 0 && pL > 0)) continue;
+    const uB = dBase * pB, uL = dLst * pL;
+    if (uB < 50 || uL < 50) continue;                        // ignore la poussière / frais
+    if (Math.abs(uB - uL) / Math.max(uB, uL) > 0.03) continue;  // pas un swap propre → on ne touche à rien
+    const date = new Date().toISOString().slice(0, 10);
+    const usd = +((uB + uL) / 2).toFixed(2);
+    const note = `Auto: on-chain ${base}→${lst} staking conversion`;
+    STATE.trades.push(
+      { id: uid(), date, asset: base, type: "Crypto", venue: "On-chain", side: "Sell", qty: dBase, price: +(usd / dBase).toFixed(6), fee: 0, totalUSD: -usd, ccy: "USDC", settle: false, note },
+      { id: uid(), date, asset: lst, type: "Crypto", venue: "On-chain", side: "Buy", qty: dLst, price: +(usd / dLst).toFixed(6), fee: 0, totalUSD: usd, ccy: "USDC", settle: false, note });
+    STATE.livePrices[lst] = { price: pL, changePct: null, prevClose: null, ts: Date.now() };   // valorisation immédiate, CoinGecko prendra le relais
+    logged++;
+  }
+  if (logged) { saveState(); toast(`⚡ ${logged} staking conversion${logged > 1 ? "s" : ""} détectée${logged > 1 ? "s" : ""} on-chain et loggée${logged > 1 ? "s" : ""} automatiquement`); }
+  return logged;
+}
+
 function walletTotals() {
   let usd = 0, live = 0, pnl = 0, hasPnl = false, watch = 0;
   for (const w of (STATE.wallets || [])) {
@@ -577,6 +617,7 @@ async function refreshPrices() {
         STATE.liveWallets[w.address] = await fetchChainWallet(w);
     }));
     if (rs.some(r => r.status === "rejected")) errors.push("wallets");
+    try { autoReconcileLST(); } catch (e) { /* best-effort */ }
   }
 
   STATE.lastRefresh = now;
@@ -750,9 +791,11 @@ function renderWallets() {
       </div>
     </div>`;
   }).join("");
+  const hasChain = ws.some(w => w.kind === "solana" || w.kind === "ethereum" || w.kind === "bitcoin");
   box.innerHTML = `<div class="panel-head"><h2>Wallets <span class="tag">${money(T.usd)}</span></h2>
       <button class="btn primary" id="walAdd">＋ Add wallet</button></div>
-    <div class="sav-grid">${cards}</div>`;
+    <div class="sav-grid">${cards}</div>
+    ${hasChain ? `<div class="muted" style="font-size:.76rem;margin-top:12px">Liquid-staking conversions (SOL→JitoSOL, ETH→stETH…) detected on-chain are logged automatically.</div>` : ""}`;
   $("#walAdd", box).onclick = () => walletModal();
 }
 
