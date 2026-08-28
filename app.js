@@ -285,7 +285,8 @@ function autoReconcileLST() {
     const note = `Auto: on-chain ${base}→${lst} staking conversion`;
     STATE.trades.push(
       { id: uid(), date, asset: base, type: "Crypto", venue: "On-chain", side: "Sell", qty: dBase, price: +(usd / dBase).toFixed(6), fee: 0, totalUSD: -usd, ccy: "USDC", settle: false, note },
-      { id: uid(), date, asset: lst, type: "Crypto", venue: "On-chain", side: "Buy", qty: dLst, price: +(usd / dLst).toFixed(6), fee: 0, totalUSD: usd, ccy: "USDC", settle: false, note });
+      { id: uid(), date, asset: lst, type: "Crypto", venue: "On-chain", side: "Buy", qty: dLst, price: +(usd / dLst).toFixed(6), fee: 0, totalUSD: usd, ccy: "USDC", settle: false, note,
+        stake: { base, baseQty: +dBase.toFixed(9) } });          // ratio d'entrée → permet d'isoler le yield de staking
     STATE.livePrices[lst] = { price: pL, changePct: null, prevClose: null, ts: Date.now() };   // valorisation immédiate, CoinGecko prendra le relais
     logged++;
   }
@@ -346,9 +347,41 @@ function nextFirstOfMonth() {
   return d.toISOString().slice(0, 10);
 }
 
+/* ---- Rendement de staking liquide ----
+   Le yield d'un LST se matérialise dans son taux de change (1 JitoSOL vaut de plus en plus de SOL).
+   On l'isole en comparant la valeur du LST aujourd'hui à celle de l'actif de base déposé. ---- */
+function stakingRows() {
+  const pm = buildPriceMap();
+  const px = a => ((pm[a] || {}).price) || 0;
+  const agg = {};
+  for (const t of STATE.trades) {
+    if (!t.stake || String(t.side).toLowerCase() !== "buy") continue;
+    const a = t.asset;
+    agg[a] = agg[a] || { asset: a, base: t.stake.base, qty: 0, baseQty: 0 };
+    agg[a].qty += Math.abs(t.qty);
+    agg[a].baseQty += Number(t.stake.baseQty) || 0;
+  }
+  const rows = [];
+  for (const a in agg) {
+    const r = agg[a], held = trackedQty(a);
+    if (held <= 1e-9) continue;
+    const scale = Math.min(1, held / (r.qty || 1));            // si tu as vendu une partie
+    const qty = r.qty * scale, baseQty = r.baseQty * scale;
+    const pL = px(a), pB = px(r.base);
+    if (!(pL > 0 && pB > 0)) continue;
+    const value = qty * pL, baseValue = baseQty * pB;
+    rows.push({ asset: a, base: r.base, qty, baseQty, value, baseValue,
+      yieldUSD: value - baseValue,
+      ratioNow: pL / pB, ratioEntry: baseQty / qty });
+  }
+  return rows;
+}
+const stakingYieldUSD = () => stakingRows().reduce((a, r) => a + r.yieldUSD, 0);
+
 /* ---- Interest ledger: {date, kind:"received"|"paid", ccy, amount(+ve), note, source} ---- */
 function interestTotals() {
   let received = typeof savingsTotals === "function" ? savingsTotals().interest : 0;   // savings accrual counts as earned
+  if (typeof stakingYieldUSD === "function") received += Math.max(stakingYieldUSD(), 0);   // rendement du staking liquide
   let paid = 0;
   for (const e of (STATE.interest || [])) {
     const usd = ccyToUSD(Math.abs(e.amount), e.ccy || "USD");
@@ -712,6 +745,10 @@ function renderKPIs(P) {
     `<span class="muted">${P.realized.length} sold position${P.realized.length === 1 ? "" : "s"}</span>`);
   if (WT.count) tile("Wallet P&L", `<span class="${cls(walPnl)}">${money(walPnl, { sign: true })}</span>`,
     `<span class="muted">Hyperliquid · live</span>`);
+  const SY = stakingRows(), sy = SY.reduce((a, r) => a + r.yieldUSD, 0);
+  if (SY.length) tile("Staking yield", `<span class="${cls(sy)}">${money(sy, { sign: true })}</span>`,
+    `<span class="muted">${SY.map(r => `${r.asset} ${((r.ratioNow / r.ratioEntry - 1) * 100).toFixed(2)}%`).join(" · ")}</span>`);
+
   if (I.received || I.paid) tile("Net interest", `<span class="${cls(I.net)}">${money(I.net, { sign: true })}</span>`,
     `<span class="muted"><span class="pos">+${money(I.received)}</span> · <span class="neg">−${money(I.paid)}</span></span>`);
   $("#stats").innerHTML = tiles.join("");
