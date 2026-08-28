@@ -10,6 +10,7 @@ const ASSET_META = {
   "BTC": { cls: "crypto", src: "coingecko", id: "bitcoin" },
   "JitoSOL": { cls: "crypto", src: "coingecko", id: "jito-staked-sol" },
   "mSOL": { cls: "crypto", src: "coingecko", id: "msol" },
+  "bSOL": { cls: "crypto", src: "coingecko", id: "blazestake-staked-sol" },
   "stETH": { cls: "crypto", src: "coingecko", id: "staked-ether" },
   "wstETH": { cls: "crypto", src: "coingecko", id: "wrapped-steth" },
   "rETH": { cls: "crypto", src: "coingecko", id: "rocket-pool-eth" },
@@ -168,37 +169,42 @@ async function fetchChainWallet(w) {
     catch (e) { return {}; }
   };
   if (w.kind === "solana") {
-    const RPC = "https://solana-rpc.publicnode.com";   // l'endpoint officiel renvoie 403 aux navigateurs
-    const post = body => fetchJSON(RPC, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
-    const r = await post({ jsonrpc: "2.0", id: 1, method: "getBalance", params: [w.address] });
-    coin = "SOL"; qty = ((r.result || {}).value || 0) / 1e9;
-    // tokens SPL (JitoSOL/mSOL si tu stakes en liquide, stables…)
-    const SPL = {
+    // Jupiter Ultra: tous les soldes (natif + SPL) sans clé. Les RPC publics refusent les
+    // requêtes "indexées" (getTokenAccountsByOwner), donc JitoSOL & co y sont invisibles.
+    const MINTS = {
       "J1toso1uCk3RLmjorhTtrVwY9HJ7X8V9yYac6Y7kGCPn": ["JitoSOL", "jito-staked-sol"],
       "mSoLzYCxHdYgdzU16g5QSh3i5K3z3KZK7ytfqcJm7So": ["mSOL", "msol"],
+      "bSo13r4TkiE4KumL71LsHTPpL2euBYLFx6h9HP3piy1": ["bSOL", "blazestake-staked-sol"],
       "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v": ["USDC", null],
       "Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB": ["USDT", null],
     };
-    try {
-      const tk = await post({ jsonrpc: "2.0", id: 2, method: "getTokenAccountsByOwner",
-        params: [w.address, { programId: "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA" }, { encoding: "jsonParsed" }] });
+    let bal = null;
+    try { bal = await fetchJSON(`https://lite-api.jup.ag/ultra/v1/balances/${encodeURIComponent(w.address)}`); } catch (e) {}
+    if (bal && typeof bal === "object") {
+      coin = "SOL"; qty = ((bal.SOL || {}).uiAmount) || 0;
       const need = [];
-      for (const acc of ((tk.result || {}).value || [])) {
-        const info = acc.account.data.parsed.info;
-        const known = SPL[info.mint]; const q = (info.tokenAmount || {}).uiAmount || 0;
-        if (!known || q <= 0) continue;
-        const [sym, cg] = known;
-        holdings.push({ coin: sym, qty: q, px: cg ? 0 : 1, usd: cg ? 0 : q, _cg: cg });
+      for (const [mint, v] of Object.entries(bal)) {
+        if (mint === "SOL") continue;
+        const q = v.uiAmount || 0; if (q <= 0) continue;
+        const known = MINTS[mint];
+        const sym = known ? known[0] : mint.slice(0, 4) + "…";
+        const cg = known ? known[1] : null;
+        holdings.push({ coin: sym, qty: q, px: cg ? 0 : (known ? 1 : 0), usd: cg ? 0 : (known ? q : 0), _cg: cg });
         if (cg) need.push(cg);
       }
       const pm2 = buildPriceMap();
-      const px2 = await cgPrice([...new Set(holdings.filter(h => h._cg && !(pm2[h.coin] && pm2[h.coin].price)).map(h => h._cg))]);
+      const px2 = await cgPrice([...new Set(holdings.filter(h => h._cg && !((pm2[h.coin] || {}).price)).map(h => h._cg))]);
       for (const h of holdings) {
-        if (!h._cg) continue;
-        h.px = (pm2[h.coin] && pm2[h.coin].price) || ((px2[h._cg] || {}).usd || 0);
+        if (!h._cg) { delete h._cg; continue; }
+        h.px = ((pm2[h.coin] || {}).price) || ((px2[h._cg] || {}).usd || 0);
         h.usd = h.qty * h.px; delete h._cg;
       }
-    } catch (e) { /* scan SPL best-effort */ }
+    } else {                                        // repli : solde natif via RPC
+      const r = await fetchJSON("https://solana-rpc.publicnode.com", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "getBalance", params: [w.address] }) });
+      coin = "SOL"; qty = ((r.result || {}).value || 0) / 1e9;
+    }
   } else if (w.kind === "ethereum") {
     const RPC = "https://ethereum-rpc.publicnode.com";
     const post = body => fetchJSON(RPC, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
@@ -251,7 +257,7 @@ function trackedQty(asset) {
    Si la chaîne montre moins de SOL et du JitoSOL non suivi (valeurs qui se correspondent),
    on écrit le swap tout seul dans le trade log. Basé sur le drift tracked-vs-onchain →
    idempotent (une fois loggé, le drift disparaît), multi-appareils sans doublon. ---- */
-const LST_PAIRS = [["SOL", "JitoSOL"], ["SOL", "mSOL"], ["ETH", "stETH"], ["ETH", "wstETH"], ["ETH", "rETH"]];
+const LST_PAIRS = [["SOL", "JitoSOL"], ["SOL", "mSOL"], ["SOL", "bSOL"], ["ETH", "stETH"], ["ETH", "wstETH"], ["ETH", "rETH"]];
 function autoReconcileLST() {
   const pm = buildPriceMap();
   const onchain = {}, onchainPx = {};
