@@ -149,14 +149,52 @@ async function fetchHyperliquid(addr) {
   return { value: perps + spotUSD, perps, spot: spotUSD, holdings, positions,
     realized, fees, funding: fundingNet, upnl, netPnl, fillCount: F.length, ts: Date.now() };
 }
+/* ---- Wallets on-chain natifs (Phantom & co) : Solana / Ethereum / Bitcoin, sans clé ----
+   Prix pris sur les feeds déjà chargés (CoinGecko). Mode watch-only possible pour vérifier
+   des positions déjà suivies dans le trade log sans les compter deux fois. ---- */
+async function fetchChainWallet(w) {
+  const pm = buildPriceMap();
+  const px = a => (pm[a] && pm[a].price) || 0;
+  let coin, qty;
+  if (w.kind === "solana") {
+    const r = await fetchJSON("https://solana-rpc.publicnode.com", {   // l'endpoint officiel renvoie 403 aux navigateurs
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "getBalance", params: [w.address] }) });
+    coin = "SOL"; qty = ((r.result || {}).value || 0) / 1e9;
+  } else if (w.kind === "ethereum") {
+    const r = await fetchJSON("https://ethereum-rpc.publicnode.com", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "eth_getBalance", params: [w.address, "latest"] }) });
+    coin = "ETH"; qty = parseInt(r.result || "0x0", 16) / 1e18;
+  } else if (w.kind === "bitcoin") {
+    const d = await fetchJSON(`https://blockstream.info/api/address/${encodeURIComponent(w.address)}`);
+    const cs = d.chain_stats || {}, ms = d.mempool_stats || {};
+    coin = "BTC"; qty = ((cs.funded_txo_sum || 0) - (cs.spent_txo_sum || 0) + (ms.funded_txo_sum || 0) - (ms.spent_txo_sum || 0)) / 1e8;
+  } else return null;
+  const p = px(coin), usd = qty * p;
+  return { value: usd, spot: usd, perps: 0, holdings: [{ coin, qty, px: p, usd }], positions: [], chain: w.kind, ts: Date.now() };
+}
+const ADDR_RE = {
+  hyperliquid: /^0x[0-9a-fA-F]{40}$/, ethereum: /^0x[0-9a-fA-F]{40}$/,
+  solana: /^[1-9A-HJ-NP-Za-km-z]{32,44}$/,
+  bitcoin: /^(bc1[0-9a-z]{20,60}|[13][1-9A-HJ-NP-Za-km-z]{25,34})$/,
+};
+function trackedQty(asset) {
+  let q = 0;
+  for (const t of STATE.trades) { if (t.asset !== asset) continue; q += String(t.side).toLowerCase() === "buy" ? Math.abs(t.qty) : -Math.abs(t.qty); }
+  return q;
+}
+
 function walletTotals() {
-  let usd = 0, live = 0, pnl = 0, hasPnl = false;
+  let usd = 0, live = 0, pnl = 0, hasPnl = false, watch = 0;
   for (const w of (STATE.wallets || [])) {
     const d = (STATE.liveWallets || {})[w.address];
+    const counted = w.counted !== false;
+    if (!counted) { if (d) live++; watch++; continue; }        // watch-only : vérification, pas de valeur
     if (d && isFinite(d.value)) { usd += d.value; live++; if (isFinite(d.netPnl)) { pnl += d.netPnl; hasPnl = true; } }
     else if (isFinite(w.manualValue)) usd += Number(w.manualValue);
   }
-  return { usd, live, pnl, hasPnl, count: (STATE.wallets || []).length };
+  return { usd, live, pnl, hasPnl, watch, count: (STATE.wallets || []).length };
 }
 
 /* ---- Savings accounts: {id, name, ccy, rate, compound:"daily"|"annual", monthly, anchorDate, anchorBalance} ----
@@ -475,6 +513,8 @@ async function refreshPrices() {
     STATE.liveWallets = STATE.liveWallets || {};
     const rs = await Promise.allSettled((STATE.wallets).map(async w => {
       if (w.kind === "hyperliquid") STATE.liveWallets[w.address] = await fetchHyperliquid(w.address);
+      else if (w.kind === "solana" || w.kind === "ethereum" || w.kind === "bitcoin")
+        STATE.liveWallets[w.address] = await fetchChainWallet(w);
     }));
     if (rs.some(r => r.status === "rejected")) errors.push("wallets");
   }
@@ -612,22 +652,31 @@ function renderWallets() {
     const d = (STATE.liveWallets || {})[w.address];
     const val = d && isFinite(d.value) ? d.value : (isFinite(w.manualValue) ? Number(w.manualValue) : null);
     const dot = d ? `<span class="pdot live"></span>` : `<span class="pdot manual"></span>`;
-    const hold = d ? (d.holdings || []).filter(h => h.usd > 0.5)
+    const hold = (d && !d.chain) ? (d.holdings || []).filter(h => h.usd > 0.5)
       .sort((a, b) => b.usd - a.usd).slice(0, 4)
       .map(h => `${fmtQty(h.qty)} ${h.coin}`).join(" · ") : "";
-    const posHtml = !d ? ""
+    const posHtml = (!d || d.chain) ? ""
       : ((d.positions || []).length
         ? `<span>${d.positions.map(p => `<span class="${cls(p.upnl)}">${p.coin} ${p.szi > 0 ? "long" : "short"} ${money(p.upnl, { sign: true })}</span>`).join(" · ")}</span>`
         : `<span class="muted">no open positions</span>`);
+    const KINDLBL = { hyperliquid: "Hyperliquid", solana: "Solana", ethereum: "Ethereum", bitcoin: "Bitcoin", manual: "manual" };
+    const verify = (d && d.chain && (d.holdings || []).length) ? (() => {
+      const h = d.holdings[0], tq = trackedQty(h.coin);
+      const tol = Math.max(Math.abs(tq) * 0.005, 1e-6);
+      return Math.abs(h.qty - tq) <= tol
+        ? `<span class="pos">✓ matches the ${fmtQty(tq)} ${h.coin} tracked</span>`
+        : `<span class="neg">⚠ on-chain ${fmtQty(h.qty)} vs ${fmtQty(tq)} tracked</span>`;
+    })() : "";
     return `<div class="sav-card">
       <div class="sav-top">
-        <span class="sav-name">${dot} ${w.name}</span>
-        <span class="sav-rate">${w.kind === "hyperliquid" ? "Hyperliquid" : w.kind}</span>
+        <span class="sav-name">${dot} ${w.name}${w.counted === false ? ` <span class="mini-tag" title="Verifies positions already tracked in the trade log — not added to Total Value">watch-only</span>` : ""}</span>
+        <span class="sav-rate">${KINDLBL[w.kind] || w.kind}</span>
       </div>
       <div class="sav-val num">${val == null ? "—" : money(val)}
         ${d && isFinite(d.netPnl) ? `<span class="wal-pnl ${cls(d.netPnl)}">${money(d.netPnl, { sign: true })}</span>` : ""}</div>
       <div class="sav-meta">
-        ${d ? `<span>spot ${money(d.spot)} · perps ${money(d.perps)}</span>` : `<span class="muted">not fetched yet — hit ↻</span>`}
+        ${d ? (d.chain ? `<span>${(d.holdings || []).map(h => `${fmtQty(h.qty)} ${h.coin} @ ${fmtPrice(h.px)}`).join(" · ") || "empty"}</span>` : `<span>spot ${money(d.spot)} · perps ${money(d.perps)}</span>`) : `<span class="muted">not fetched yet — hit ↻</span>`}
+        ${verify ? `<span>${verify}</span>` : ""}
         ${d && isFinite(d.realized) ? `<span class="muted">realized <span class="${cls(d.realized)}">${money(d.realized, { sign: true })}</span> · fees ${money(d.fees)} · funding <span class="${cls(d.funding)}">${money(d.funding, { sign: true })}</span>${d.upnl ? ` · unreal. <span class="${cls(d.upnl)}">${money(d.upnl, { sign: true })}</span>` : ""}</span>` : ""}
         ${d && d.fillCount ? `<span class="muted">${d.fillCount} fills</span>` : ""}
         ${hold ? `<span class="muted">${hold}</span>` : ""}
@@ -654,8 +703,13 @@ function walletModal(editIdx = null) {
       <div class="field"><label>Label</label><input id="w_name" value="${(w.name || "").replace(/"/g, "&quot;")}" placeholder="Fun trading wallet"></div>
       <div class="field"><label>Network</label><select id="w_kind">
         <option value="hyperliquid"${w.kind === "hyperliquid" ? " selected" : ""}>Hyperliquid (live, no key)</option>
+        <option value="solana"${w.kind === "solana" ? " selected" : ""}>Solana (live, no key)</option>
+        <option value="ethereum"${w.kind === "ethereum" ? " selected" : ""}>Ethereum (live, no key)</option>
+        <option value="bitcoin"${w.kind === "bitcoin" ? " selected" : ""}>Bitcoin (live, no key)</option>
         <option value="manual"${w.kind === "manual" ? " selected" : ""}>Manual value</option></select></div>
-      <div class="field full"><label>Address</label><input id="w_addr" value="${w.address || ""}" placeholder="0x…" spellcheck="false"></div>
+      <div class="field full"><label>Address</label><input id="w_addr" value="${w.address || ""}" placeholder="0x… / base58 / bc1…" spellcheck="false"></div>
+      <label class="settle-row full"><input type="checkbox" id="w_counted"${w.counted !== false ? " checked" : ""}>
+        <span>Count in <b>Total Value</b> — untick for watch-only (coins already tracked as positions in the trade log)</span></label>
       <div class="field full" id="w_manualbox" style="display:${w.kind === "manual" ? "" : "none"}">
         <label>Value (USD)</label><input id="w_val" type="number" step="any" value="${w.manualValue || 0}"></div>
       <div class="computed full"><span class="muted">Live check</span><span id="w_test" class="num muted">—</span></div>
@@ -667,21 +721,27 @@ function walletModal(editIdx = null) {
     </div>`;
   const back = openModal(m); const close = () => back.remove();
   m.querySelector(".x").onclick = close; $("#w_cancel", m).onclick = close;
-  $("#w_kind", m).onchange = () => { $("#w_manualbox", m).style.display = $("#w_kind", m).value === "manual" ? "" : "none"; };
+  $("#w_kind", m).onchange = () => {
+    const k = $("#w_kind", m).value;
+    $("#w_manualbox", m).style.display = k === "manual" ? "" : "none";
+    if (editIdx == null) $("#w_counted", m).checked = !(k === "solana" || k === "ethereum" || k === "bitcoin");   // chaînes = déjà suivies en positions
+  };
   $("#w_check", m).onclick = async () => {
-    const addr = $("#w_addr", m).value.trim();
-    if (!/^0x[0-9a-fA-F]{40}$/.test(addr)) return void ($("#w_test", m).textContent = "invalid address");
+    const addr = $("#w_addr", m).value.trim(), kind = $("#w_kind", m).value;
+    const re = ADDR_RE[kind];
+    if (re && !re.test(addr)) return void ($("#w_test", m).textContent = "invalid " + kind + " address");
     $("#w_test", m).textContent = "checking…";
     try {
-      const d = await fetchHyperliquid(addr);
-      $("#w_test", m).innerHTML = `<span class="pos">${money(d.value)}</span> <span class="muted">spot ${money(d.spot)} · perps ${money(d.perps)}</span>`;
-    } catch (e) { $("#w_test", m).textContent = "failed: " + e.message; }
+      const d = kind === "hyperliquid" ? await fetchHyperliquid(addr) : await fetchChainWallet({ kind, address: addr });
+      $("#w_test", m).innerHTML = `<span class="pos">${money(d.value)}</span> <span class="muted">${d.chain ? (d.holdings || []).map(h => `${fmtQty(h.qty)} ${h.coin}`).join(" · ") : `spot ${money(d.spot)} · perps ${money(d.perps)}`}</span>`;
+    } catch (e) { $("#w_test", m).textContent = "failed: " + e.message.slice(0, 60); }
   };
   $("#w_ok", m).onclick = () => {
     const addr = $("#w_addr", m).value.trim();
     const kind = $("#w_kind", m).value;
-    if (kind !== "manual" && !/^0x[0-9a-fA-F]{40}$/.test(addr)) return toast("Enter a valid 0x address", true);
-    const rec = { id: w.id || uid(), name: $("#w_name", m).value.trim() || "Wallet", address: addr, kind };
+    if (kind !== "manual" && !(ADDR_RE[kind] || /^.{6,}$/).test(addr)) return toast("Enter a valid " + kind + " address", true);
+    const rec = { id: w.id || uid(), name: $("#w_name", m).value.trim() || "Wallet", address: addr, kind,
+      counted: $("#w_counted", m).checked };
     if (kind === "manual") rec.manualValue = parseFloat($("#w_val", m).value) || 0;
     STATE.wallets = STATE.wallets || [];
     if (editIdx != null) STATE.wallets[editIdx] = rec; else STATE.wallets.push(rec);
