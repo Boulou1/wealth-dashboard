@@ -65,6 +65,7 @@ function defaultState() {
     interest: [],                          // {date, kind:'received'|'paid', ccy, amount, note, source}
     savings: [],                           // {id, name, ccy, rate, compound, monthly, anchorDate, anchorBalance}
     wallets: [],                           // {id, name, address, kind:'hyperliquid'}
+    execRefs: {},                          // 'asset|date' -> {c,h,l} bougie du jour (qualité d'exécution)
     assetMeta: {},                         // user asset registry: asset -> {cls, src, sym}
     fxEURUSD: seed.fxEURUSD || 1.10,
     settings: { finnhubKey: "", multipliers: {} },
@@ -1095,14 +1096,87 @@ function renderClosed(P) {
     <td class="num ${cls(tc.cost ? tc.r / tc.cost : 0)}">${pct(tc.cost ? tc.r / tc.cost : 0)}</td></tr>`;
 }
 
+/* ---- Execution quality: bougie du jour (close/high/low) par trade, mise en cache ----
+   Les trades ne stockent que la DATE (pas l'heure) → la référence est la clôture + le range du jour.
+   Sources: crypto=CoinGecko range, actions US=Yahoo daily via r.jina.ai, tokenisés=MEXC klines via jina. ---- */
+const EXEC_CCY = /^(USD|USDT|USDC)$/;
+const execRefKey = t => `${t.asset}|${t.date}`;
+function execEligible(t) {
+  const src = metaFor(t.asset).src;
+  return EXEC_CCY.test(t.ccy || "") && src && src !== "manual" && t.price > 0;
+}
+async function fetchExecRef(t) {
+  const meta = metaFor(t.asset), mult = multFor(t.asset);
+  const day0 = Date.parse(t.date + "T00:00:00Z"), day1 = day0 + 864e5;
+  const viaJina = async url => {
+    const txt = await fetchText("https://r.jina.ai/" + url);
+    const m = txt.match(/Markdown Content:\s*([\[{].*)/s);
+    return JSON.parse((m ? m[1] : txt).trim());
+  };
+  let c, h, l;
+  if (meta.src === "coingecko") {
+    const id = meta.id || meta.sym;
+    const d = await fetchJSON(`https://api.coingecko.com/api/v3/coins/${id}/market_chart/range?vs_currency=usd&from=${day0 / 1000}&to=${day1 / 1000}`);
+    const pts = (d.prices || []).map(x => x[1]);
+    if (!pts.length) return null;
+    c = pts[pts.length - 1]; h = Math.max(...pts); l = Math.min(...pts);
+  } else if (meta.src === "mexc") {
+    const d = await viaJina(`https://api.mexc.com/api/v3/klines?symbol=${meta.sym}&interval=1d&startTime=${day0}&endTime=${day1}`);
+    if (!Array.isArray(d) || !d.length) return null;
+    h = +d[0][2]; l = +d[0][3]; c = +d[0][4];
+  } else {
+    const sym = meta.sym || t.asset;
+    const d = await viaJina(`https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(sym)}?period1=${day0 / 1000}&period2=${day1 / 1000}&interval=1d`);
+    const q = d.chart.result[0].indicators.quote[0];
+    if (q.close == null || q.close[0] == null) return null;
+    c = q.close[0]; h = q.high[0]; l = q.low[0];
+  }
+  if (!(c > 0)) return null;
+  return { c: c * mult, h: h * mult, l: l * mult };
+}
+async function checkExecution() {
+  const btn = $("#execBtn");
+  STATE.execRefs = STATE.execRefs || {};
+  const seen = new Set(); const todo = [];
+  for (const t of STATE.trades) {
+    if (!execEligible(t)) continue;
+    const k = execRefKey(t);
+    if (STATE.execRefs[k] || seen.has(k)) continue;
+    seen.add(k); todo.push(t);
+  }
+  if (!todo.length) { toast("Execution data already up to date"); return; }
+  if (btn) btn.disabled = true;
+  let done = 0, fail = 0;
+  for (const t of todo) {
+    if (btn) btn.innerHTML = `⚖ ${done + fail}/${todo.length}…`;
+    try { const ref = await fetchExecRef(t); STATE.execRefs[execRefKey(t)] = ref || { n: 1 }; done++; }
+    catch (e) { fail++; }                        // pas de cache en cas d'erreur → retry possible
+    saveLocal();
+    await new Promise(r => setTimeout(r, metaFor(t.asset).src === "coingecko" ? 1500 : 450));
+  }
+  if (btn) { btn.disabled = false; btn.innerHTML = "⚖ Exec quality"; }
+  saveState(); renderLog();
+  toast(`Execution check: ${done} day candles fetched${fail ? `, ${fail} failed (retry later)` : ""}`);
+}
+
 function renderLog() {
   const body = $("#logBody");
   const rows = STATE.trades.map((t, i) => ({ t, i }))
     .sort((a, b) => a.t.date < b.t.date ? 1 : a.t.date > b.t.date ? -1 : b.i - a.i);
   $("#logCount").textContent = STATE.trades.length;
-  if (!rows.length) { body.innerHTML = `<tr><td colspan="8" class="empty">No trades yet.</td></tr>`; return; }
+  if (!rows.length) { body.innerHTML = `<tr><td colspan="10" class="empty">No trades yet.</td></tr>`; return; }
   body.innerHTML = rows.map(({ t, i }) => {
     const buy = String(t.side).toLowerCase() === "buy";
+    const feeCell = t.fee ? `<span class="muted">${moneyIn(t.fee, t.ccy === "EUR" ? "EUR" : (t.ccy || "USD"), 2)}</span>` : `<span class="muted">—</span>`;
+    let execCell = `<span class="muted">—</span>`;
+    if (execEligible(t)) {
+      const ref = (STATE.execRefs || {})[execRefKey(t)];
+      if (ref && ref.c) {
+        const adv = buy ? (ref.c - t.price) / ref.c : (t.price - ref.c) / ref.c;
+        execCell = `<span class="${cls(adv)}" title="Day close ${fmtPrice(ref.c)} · range ${fmtPrice(ref.l)}–${fmtPrice(ref.h)} — ${buy ? "bought" : "sold"} ${adv >= 0 ? "better" : "worse"} than close">${pct(adv)}</span>`;
+      } else if (ref && ref.n) execCell = `<span class="muted" title="No market data for that day">n/a</span>`;
+      else execCell = `<span class="muted" title="Click ⚖ Exec quality to fetch">·</span>`;
+    }
     return `<tr>
       <td>${t.date}</td>
       <td style="text-align:left">${t.asset}</td>
@@ -1110,7 +1184,9 @@ function renderLog() {
       <td style="text-align:left" class="muted">${t.venue}</td>
       <td class="num">${fmtQty(Math.abs(t.qty))}</td>
       <td class="num">${t.price.toLocaleString("en-US", { maximumFractionDigits: 4 })} ${t.ccy}</td>
+      <td class="num">${feeCell}</td>
       <td class="num">$${Math.abs(t.totalUSD).toLocaleString("en-US", { maximumFractionDigits: 2 })}</td>
+      <td class="num">${execCell}</td>
       <td><div class="row-actions">
         <button title="Edit" data-edit="${i}">${ICON.edit}</button>
         <button title="Delete" data-del="${i}">${ICON.trash}</button>
@@ -1493,7 +1569,7 @@ function exportCSV() {
 }
 function exportData() {
   const data = { version: 1, exported: new Date().toISOString(), trades: STATE.trades,
-    snapshots: STATE.snapshots, cash: STATE.cash, interest: STATE.interest, savings: STATE.savings, wallets: STATE.wallets, assetMeta: STATE.assetMeta, manualPrices: STATE.manualPrices, fxEURUSD: STATE.fxEURUSD };
+    snapshots: STATE.snapshots, cash: STATE.cash, interest: STATE.interest, savings: STATE.savings, wallets: STATE.wallets, execRefs: STATE.execRefs, assetMeta: STATE.assetMeta, manualPrices: STATE.manualPrices, fxEURUSD: STATE.fxEURUSD };
   const blob = new Blob([JSON.stringify(data, null, 1)], { type: "application/json" });
   const a = el("a"); a.href = URL.createObjectURL(blob);
   a.download = `wealth-backup-${new Date().toISOString().slice(0, 10)}.json`;
@@ -1512,6 +1588,7 @@ function importData(file, done) {
       if (Array.isArray(d.interest)) STATE.interest = d.interest;
       if (Array.isArray(d.savings)) STATE.savings = d.savings;
       if (Array.isArray(d.wallets)) STATE.wallets = d.wallets;
+      if (d.execRefs) STATE.execRefs = d.execRefs;
       if (d.assetMeta) STATE.assetMeta = d.assetMeta;
       if (d.manualPrices) STATE.manualPrices = d.manualPrices;
       if (d.fxEURUSD) STATE.fxEURUSD = d.fxEURUSD;
@@ -1531,7 +1608,7 @@ const b64dec = b => decodeURIComponent(escape(atob(b)));
 
 function backupPayload() {   // full snapshot; token lives outside STATE so it is never included
   return { version: 1, exported: new Date().toISOString(), trades: STATE.trades, snapshots: STATE.snapshots,
-    cash: STATE.cash, interest: STATE.interest, savings: STATE.savings, wallets: STATE.wallets, assetMeta: STATE.assetMeta, manualPrices: STATE.manualPrices,
+    cash: STATE.cash, interest: STATE.interest, savings: STATE.savings, wallets: STATE.wallets, execRefs: STATE.execRefs, assetMeta: STATE.assetMeta, manualPrices: STATE.manualPrices,
     settings: { finnhubKey: STATE.settings.finnhubKey || "", multipliers: STATE.settings.multipliers || {} },
     fxEURUSD: STATE.fxEURUSD };
 }
@@ -1625,6 +1702,7 @@ async function ghRestore() {
     if (Array.isArray(j.interest)) STATE.interest = j.interest;
     if (Array.isArray(j.savings)) STATE.savings = j.savings;
     if (Array.isArray(j.wallets)) STATE.wallets = j.wallets;
+    if (j.execRefs) STATE.execRefs = j.execRefs;
     if (j.assetMeta) STATE.assetMeta = j.assetMeta;
     if (j.manualPrices) STATE.manualPrices = j.manualPrices;
     if (j.settings) { STATE.settings.finnhubKey = j.settings.finnhubKey || STATE.settings.finnhubKey; STATE.settings.multipliers = j.settings.multipliers || STATE.settings.multipliers; }
@@ -1707,6 +1785,7 @@ function wireHeader() {
   $("#addBtn").onclick = () => tradeModal();
   const addBtn3 = $("#addBtn3"); if (addBtn3) addBtn3.onclick = () => tradeModal();
   const csvBtn = $("#csvBtn"); if (csvBtn) csvBtn.onclick = exportCSV;
+  const eb = $("#execBtn"); if (eb) eb.onclick = checkExecution;
   const pb = $("#printBtn"); if (pb) pb.onclick = printReport;
   const sb = $("#syncBtn"); if (sb) sb.onclick = async () => {
     if (!ghReady()) { toast("Set up GitHub backup in Settings first", true); return settingsModal(); }
@@ -1752,6 +1831,7 @@ function boot() {
   STATE.savings = STATE.savings || [];
   STATE.wallets = STATE.wallets || [];
   STATE.liveWallets = STATE.liveWallets || {};
+  STATE.execRefs = STATE.execRefs || {};
   saveLocal();   // migrations shouldn't trigger a backup on every load
   wireHeader();
   render();

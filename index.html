@@ -10,7 +10,7 @@
   <meta http-equiv="Expires" content="0">
   <title>Wealth</title>
   <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>💎</text></svg>">
-  <link rel="stylesheet" href="styles.css?v=25">
+  <link rel="stylesheet" href="styles.css?v=26">
 </head>
 <body>
 
@@ -93,6 +93,7 @@
       <div class="panel">
         <div class="panel-head"><h2>Trade log <span class="tag"><span id="logCount">0</span> trades</span></h2>
           <div style="display:flex;gap:8px">
+            <button class="btn" id="execBtn" title="Compare each fill to that day's close & range">⚖ Exec quality</button>
             <button class="btn" id="csvBtn" title="Export trades, cash & balances as CSV">⬇ Export CSV</button>
             <button class="btn" id="addBtn3">+ Add trade</button>
           </div></div>
@@ -104,7 +105,9 @@
             <th class="no-sort" style="text-align:left">Venue</th>
             <th class="no-sort">Qty</th>
             <th class="no-sort">Price</th>
+            <th class="no-sort">Fee</th>
             <th class="no-sort">Total (USD)</th>
+            <th class="no-sort">vs Close</th>
             <th class="no-sort"></th>
           </tr></thead>
           <tbody id="logBody"></tbody>
@@ -119,7 +122,7 @@
   </div>
 
   <script src="data.js"></script>
-  <script src="app.js?v=25"></script>
+  <script src="app.js?v=26"></script>
   <script>
     // inject header icons after app.js defines ICON
     window.addEventListener("DOMContentLoaded", () => {
