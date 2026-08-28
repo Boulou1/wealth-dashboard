@@ -205,16 +205,18 @@ async function fetchChainWallet(w) {
     const r = await post({ jsonrpc: "2.0", id: 1, method: "eth_getBalance", params: [w.address, "latest"] });
     coin = "ETH"; qty = parseInt(r.result || "0x0", 16) / 1e18;
     // ERC-20 de staking liquide (stETH/wstETH/rETH)
-    const ERC = [["0xae7ab96520DE3A18E5e111B5EaAb095312D7fE84", "stETH", "staked-ether"],
-                 ["0x7f39C581F595B53c5cb19bD0b3f8dA6c935E2Ca0", "wstETH", "wrapped-steth"],
-                 ["0xae78736Cd615f374D3085123A210448E74Fc6393", "rETH", "rocket-pool-eth"]];
+    const ERC = [["0xae7ab96520DE3A18E5e111B5EaAb095312D7fE84", "stETH", "staked-ether", 18],
+                 ["0x7f39C581F595B53c5cb19bD0b3f8dA6c935E2Ca0", "wstETH", "wrapped-steth", 18],
+                 ["0xae78736Cd615f374D3085123A210448E74Fc6393", "rETH", "rocket-pool-eth", 18],
+                 ["0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48", "USDC", null, 6],
+                 ["0xdAC17F958D2ee523a2206206994597C13D831ec7", "USDT", null, 6]];
     try {
       const data = "0x70a08231" + w.address.slice(2).toLowerCase().padStart(64, "0");
       const need = [];
-      for (const [addr2, sym, cg] of ERC) {
+      for (const [addr2, sym, cg, dec] of ERC) {
         const b = await post({ jsonrpc: "2.0", id: 3, method: "eth_call", params: [{ to: addr2, data }, "latest"] });
-        const q = parseInt(b.result || "0x0", 16) / 1e18;
-        if (q > 1e-9) { holdings.push({ coin: sym, qty: q, px: 0, usd: 0, _cg: cg }); need.push(cg); }
+        const q = parseInt(b.result || "0x0", 16) / Math.pow(10, dec);
+        if (q > 1e-9) { holdings.push({ coin: sym, qty: q, px: cg ? 0 : 1, usd: cg ? 0 : q, _cg: cg }); if (cg) need.push(cg); }
       }
       const pm2 = buildPriceMap();
       const px2 = await cgPrice([...new Set(holdings.filter(h => h._cg && !(pm2[h.coin] && pm2[h.coin].price)).map(h => h._cg))]);
@@ -762,6 +764,13 @@ function renderWallets() {
         : `<span class="muted">no open positions</span>`);
     const KINDLBL = { hyperliquid: "Hyperliquid", solana: "Solana", ethereum: "Ethereum", bitcoin: "Bitcoin", manual: "manual" };
     const verify = (d && d.chain && (d.holdings || []).length) ? d.holdings.map(h => {
+      if (/^(USDC|USDT)$/.test(h.coin)) {
+        const cb = cashBalances()[h.coin] || 0;
+        if (h.usd < 1 && cb < 1) return "";
+        return Math.abs(h.qty - cb) <= Math.max(cb * 0.005, 1)
+          ? `<span class="pos">✓ ${h.coin}: matches the ${moneyIn(cb, h.coin, 0)} cash</span>`
+          : `<span class="neg">⚠ ${h.coin}: on-chain ${fmtQty(h.qty)} vs ${moneyIn(cb, h.coin, 0)} in cash</span>`;
+      }
       const tq = trackedQty(h.coin);
       if (Math.abs(tq) < 1e-9 && h.usd < 1) return "";                     // poussière non suivie
       const tol = Math.max(Math.abs(tq) * 0.005, 1e-6);
