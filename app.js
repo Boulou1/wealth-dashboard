@@ -8,6 +8,11 @@
 /* ---- Asset → price-source mapping (generic market metadata, safe to commit) */
 const ASSET_META = {
   "BTC": { cls: "crypto", src: "coingecko", id: "bitcoin" },
+  "JitoSOL": { cls: "crypto", src: "coingecko", id: "jito-staked-sol" },
+  "mSOL": { cls: "crypto", src: "coingecko", id: "msol" },
+  "stETH": { cls: "crypto", src: "coingecko", id: "staked-ether" },
+  "wstETH": { cls: "crypto", src: "coingecko", id: "wrapped-steth" },
+  "rETH": { cls: "crypto", src: "coingecko", id: "rocket-pool-eth" },
   "ETH": { cls: "crypto", src: "coingecko", id: "ethereum" },
   "SOL": { cls: "crypto", src: "coingecko", id: "solana" },
   "COIN": { cls: "stock", src: "finnhub", sym: "COIN" },
@@ -156,23 +161,78 @@ async function fetchChainWallet(w) {
   const pm = buildPriceMap();
   const px = a => (pm[a] && pm[a].price) || 0;
   let coin, qty;
+  const holdings = [];
+  const cgPrice = async ids => {                     // prix batch pour les tokens hors positions suivies
+    if (!ids.length) return {};
+    try { return await fetchJSON(`https://api.coingecko.com/api/v3/simple/price?ids=${ids.join(",")}&vs_currencies=usd`); }
+    catch (e) { return {}; }
+  };
   if (w.kind === "solana") {
-    const r = await fetchJSON("https://solana-rpc.publicnode.com", {   // l'endpoint officiel renvoie 403 aux navigateurs
-      method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "getBalance", params: [w.address] }) });
+    const RPC = "https://solana-rpc.publicnode.com";   // l'endpoint officiel renvoie 403 aux navigateurs
+    const post = body => fetchJSON(RPC, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+    const r = await post({ jsonrpc: "2.0", id: 1, method: "getBalance", params: [w.address] });
     coin = "SOL"; qty = ((r.result || {}).value || 0) / 1e9;
+    // tokens SPL (JitoSOL/mSOL si tu stakes en liquide, stables…)
+    const SPL = {
+      "J1toso1uCk3RLmjorhTtrVwY9HJ7X8V9yYac6Y7kGCPn": ["JitoSOL", "jito-staked-sol"],
+      "mSoLzYCxHdYgdzU16g5QSh3i5K3z3KZK7ytfqcJm7So": ["mSOL", "msol"],
+      "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v": ["USDC", null],
+      "Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB": ["USDT", null],
+    };
+    try {
+      const tk = await post({ jsonrpc: "2.0", id: 2, method: "getTokenAccountsByOwner",
+        params: [w.address, { programId: "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA" }, { encoding: "jsonParsed" }] });
+      const need = [];
+      for (const acc of ((tk.result || {}).value || [])) {
+        const info = acc.account.data.parsed.info;
+        const known = SPL[info.mint]; const q = (info.tokenAmount || {}).uiAmount || 0;
+        if (!known || q <= 0) continue;
+        const [sym, cg] = known;
+        holdings.push({ coin: sym, qty: q, px: cg ? 0 : 1, usd: cg ? 0 : q, _cg: cg });
+        if (cg) need.push(cg);
+      }
+      const pm2 = buildPriceMap();
+      const px2 = await cgPrice([...new Set(holdings.filter(h => h._cg && !(pm2[h.coin] && pm2[h.coin].price)).map(h => h._cg))]);
+      for (const h of holdings) {
+        if (!h._cg) continue;
+        h.px = (pm2[h.coin] && pm2[h.coin].price) || ((px2[h._cg] || {}).usd || 0);
+        h.usd = h.qty * h.px; delete h._cg;
+      }
+    } catch (e) { /* scan SPL best-effort */ }
   } else if (w.kind === "ethereum") {
-    const r = await fetchJSON("https://ethereum-rpc.publicnode.com", {
-      method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "eth_getBalance", params: [w.address, "latest"] }) });
+    const RPC = "https://ethereum-rpc.publicnode.com";
+    const post = body => fetchJSON(RPC, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+    const r = await post({ jsonrpc: "2.0", id: 1, method: "eth_getBalance", params: [w.address, "latest"] });
     coin = "ETH"; qty = parseInt(r.result || "0x0", 16) / 1e18;
+    // ERC-20 de staking liquide (stETH/wstETH/rETH)
+    const ERC = [["0xae7ab96520DE3A18E5e111B5EaAb095312D7fE84", "stETH", "staked-ether"],
+                 ["0x7f39C581F595B53c5cb19bD0b3f8dA6c935E2Ca0", "wstETH", "wrapped-steth"],
+                 ["0xae78736Cd615f374D3085123A210448E74Fc6393", "rETH", "rocket-pool-eth"]];
+    try {
+      const data = "0x70a08231" + w.address.slice(2).toLowerCase().padStart(64, "0");
+      const need = [];
+      for (const [addr2, sym, cg] of ERC) {
+        const b = await post({ jsonrpc: "2.0", id: 3, method: "eth_call", params: [{ to: addr2, data }, "latest"] });
+        const q = parseInt(b.result || "0x0", 16) / 1e18;
+        if (q > 1e-9) { holdings.push({ coin: sym, qty: q, px: 0, usd: 0, _cg: cg }); need.push(cg); }
+      }
+      const pm2 = buildPriceMap();
+      const px2 = await cgPrice([...new Set(holdings.filter(h => h._cg && !(pm2[h.coin] && pm2[h.coin].price)).map(h => h._cg))]);
+      for (const h of holdings) {
+        if (!h._cg) continue;
+        h.px = (pm2[h.coin] && pm2[h.coin].price) || ((px2[h._cg] || {}).usd || 0);
+        h.usd = h.qty * h.px; delete h._cg;
+      }
+    } catch (e) { /* scan ERC-20 best-effort */ }
   } else if (w.kind === "bitcoin") {
     const d = await fetchJSON(`https://blockstream.info/api/address/${encodeURIComponent(w.address)}`);
     const cs = d.chain_stats || {}, ms = d.mempool_stats || {};
     coin = "BTC"; qty = ((cs.funded_txo_sum || 0) - (cs.spent_txo_sum || 0) + (ms.funded_txo_sum || 0) - (ms.spent_txo_sum || 0)) / 1e8;
   } else return null;
-  const p = px(coin), usd = qty * p;
-  return { value: usd, spot: usd, perps: 0, holdings: [{ coin, qty, px: p, usd }], positions: [], chain: w.kind, ts: Date.now() };
+  const p = px(coin);
+  holdings.unshift({ coin, qty, px: p, usd: qty * p });
+  const value = holdings.reduce((a, h) => a + (h.usd || 0), 0);
+  return { value, spot: value, perps: 0, holdings, positions: [], chain: w.kind, ts: Date.now() };
 }
 const ADDR_RE = {
   hyperliquid: /^0x[0-9a-fA-F]{40}$/, ethereum: /^0x[0-9a-fA-F]{40}$/,
@@ -660,13 +720,14 @@ function renderWallets() {
         ? `<span>${d.positions.map(p => `<span class="${cls(p.upnl)}">${p.coin} ${p.szi > 0 ? "long" : "short"} ${money(p.upnl, { sign: true })}</span>`).join(" · ")}</span>`
         : `<span class="muted">no open positions</span>`);
     const KINDLBL = { hyperliquid: "Hyperliquid", solana: "Solana", ethereum: "Ethereum", bitcoin: "Bitcoin", manual: "manual" };
-    const verify = (d && d.chain && (d.holdings || []).length) ? (() => {
-      const h = d.holdings[0], tq = trackedQty(h.coin);
+    const verify = (d && d.chain && (d.holdings || []).length) ? d.holdings.map(h => {
+      const tq = trackedQty(h.coin);
+      if (Math.abs(tq) < 1e-9 && h.usd < 1) return "";                     // poussière non suivie
       const tol = Math.max(Math.abs(tq) * 0.005, 1e-6);
       return Math.abs(h.qty - tq) <= tol
-        ? `<span class="pos">✓ matches the ${fmtQty(tq)} ${h.coin} tracked</span>`
-        : `<span class="neg">⚠ on-chain ${fmtQty(h.qty)} vs ${fmtQty(tq)} tracked</span>`;
-    })() : "";
+        ? `<span class="pos">✓ ${h.coin}: matches the ${fmtQty(tq)} tracked</span>`
+        : `<span class="neg">⚠ ${h.coin}: on-chain ${fmtQty(h.qty)} vs ${fmtQty(tq)} tracked</span>`;
+    }).filter(Boolean).join("<br>") : "";
     return `<div class="sav-card">
       <div class="sav-top">
         <span class="sav-name">${dot} ${w.name}${w.counted === false ? ` <span class="mini-tag" title="Verifies positions already tracked in the trade log — not added to Total Value">watch-only</span>` : ""}</span>
