@@ -122,14 +122,21 @@ const HL_STABLE = /^(USDC|USDT0?|USDE|USDH|FEUSD|USDXL)$/i;
 async function fetchHyperliquid(addr) {
   const post = body => fetchJSON("https://api.hyperliquid.xyz/info", {
     method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
-  const [perp, spot, mids, fills, funding] = await Promise.all([
+  const [perp, spot, mids, fills, funding, dexList] = await Promise.all([
     post({ type: "clearinghouseState", user: addr }),
     post({ type: "spotClearinghouseState", user: addr }),
     post({ type: "allMids" }),
     post({ type: "userFills", user: addr }).catch(() => []),
     post({ type: "userFunding", user: addr, startTime: 0 }).catch(() => []),
+    post({ type: "perpDexs" }).catch(() => []),
   ]);
-  const perps = parseFloat((perp && perp.marginSummary && perp.marginSummary.accountValue) || 0) || 0;
+  // Builder-deployed perp DEXs (HIP-3, e.g. "para:CRDO", "xyz:NVDA") each keep their OWN margin
+  // account. A position there is invisible to the plain clearinghouseState, so query every dex.
+  const dexNames = (Array.isArray(dexList) ? dexList : []).map(d => d && d.name).filter(Boolean);
+  const dexStates = await Promise.all(dexNames.map(n =>
+    post({ type: "clearinghouseState", user: addr, dex: n }).catch(() => null)));
+  const states = [perp, ...dexStates].filter(Boolean);
+  const perps = states.reduce((s, st) => s + (parseFloat((st.marginSummary || {}).accountValue) || 0), 0);
   let spotUSD = 0; const holdings = [];
   for (const b of ((spot && spot.balances) || [])) {
     const q = parseFloat(b.total);
@@ -139,11 +146,12 @@ async function fetchHyperliquid(addr) {
     spotUSD += q * px;
     holdings.push({ coin: b.coin, qty: q, px, usd: q * px });
   }
-  const positions = ((perp && perp.assetPositions) || []).map(a => ({
+  const positions = states.flatMap(st => (st.assetPositions || []).map(a => ({
     coin: (a.position || {}).coin, szi: parseFloat((a.position || {}).szi || 0),
     upnl: parseFloat((a.position || {}).unrealizedPnl || 0),
     entry: parseFloat((a.position || {}).entryPx || 0),
-  })).filter(p => p.szi);
+    value: Math.abs(parseFloat((a.position || {}).positionValue || 0)),
+  }))).filter(p => p.szi);
   // P&L straight from Hyperliquid: realized (closedPnl) net of fees and funding, plus open unrealized
   const F = Array.isArray(fills) ? fills : [];
   const realized = F.reduce((a, f) => a + (parseFloat(f.closedPnl) || 0), 0);
@@ -803,7 +811,7 @@ function renderWallets() {
       .map(h => `${fmtQty(h.qty)} ${h.coin}`).join(" · ") : "";
     const posHtml = (!d || d.chain) ? ""
       : ((d.positions || []).length
-        ? `<span>${d.positions.map(p => `<span class="${cls(p.upnl)}">${p.coin} ${p.szi > 0 ? "long" : "short"} ${money(p.upnl, { sign: true })}</span>`).join(" · ")}</span>`
+        ? `<span>${d.positions.map(p => `<span class="${cls(p.upnl)}">${p.coin} ${p.szi > 0 ? "long" : "short"}${p.value ? " " + money(p.value) : ""} ${money(p.upnl, { sign: true })}</span>`).join(" · ")}</span>`
         : `<span class="muted">no open positions</span>`);
     const KINDLBL = { hyperliquid: "Hyperliquid", solana: "Solana", ethereum: "Ethereum", bitcoin: "Bitcoin", manual: "manual" };
     const verify = (d && d.chain && (d.holdings || []).length) ? d.holdings.map(h => {
