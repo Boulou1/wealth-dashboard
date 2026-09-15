@@ -440,7 +440,7 @@ function toast(msg, isErr = false) {
   t.textContent = msg; t.className = "toast show" + (isErr ? " err" : "");
   clearTimeout(t._t); t._t = setTimeout(() => t.className = "toast", 2600);
 }
-const BADGE_OVERRIDE = { "TR Robo (ETF basket)": "ROBO" };
+const BADGE_OVERRIDE = { "Revolut Robo (ETF basket)": "ROBO" };
 const initials = (name) => {
   if (BADGE_OVERRIDE[name]) return BADGE_OVERRIDE[name];
   const n = String(name).trim();
@@ -722,7 +722,7 @@ function renderKPIs(P) {
       <div class="label">Total value <span class="pdot live" style="margin-left:2px"></span></div>
       <div class="val num">${money(totalValue)}</div>
       <div class="hero-chips">
-        ${t.day ? `<span class="chip ${cls(t.day)}">${t.day > 0 ? "▲" : "▼"} ${money(Math.abs(t.day))} · ${pct(Math.abs(dayPct))} today</span>` : ""}
+        ${t.day ? `<span class="chip ${cls(t.day)}">${t.day > 0 ? "▲" : "▼"} ${money(Math.abs(t.day))} · ${pct(Math.abs(dayPct), false)} today</span>` : ""}
         <span class="chip ${cls(totalPL)}">${money(totalPL, { sign: true })} all-time</span>
       </div>
     </div>
@@ -1165,7 +1165,7 @@ function renderSparkline() {
   $("#sparkMeta").innerHTML = `
     <div><div class="label muted" style="font-size:.72rem;text-transform:uppercase;letter-spacing:.07em;font-weight:650">Net worth <span class="pdot live" style="margin-left:2px"></span></div>
       <div class="num" style="font-size:1.55rem;font-weight:750;letter-spacing:-.02em">${money(last)}</div>
-      <div style="margin-top:2px"><span class="chip ${up ? "pos" : "neg"}">${up ? "▲" : "▼"} ${money(Math.abs(delta))} · ${pct(Math.abs(first ? delta / first : 0))}</span></div></div>
+      <div style="margin-top:2px"><span class="chip ${up ? "pos" : "neg"}">${up ? "▲" : "▼"} ${money(Math.abs(delta))} · ${pct(Math.abs(first ? delta / first : 0), false)}</span></div></div>
     <div style="text-align:right;display:flex;flex-direction:column;align-items:flex-end;gap:7px">
       <div class="seg seg-mini" id="sparkRange">${segBtns}</div>
       <div class="muted" style="font-size:.7rem">${fmtD(pts[0].t)} → ${all.at(-1).date} · ${pts.filter(p => p.real).length} points</div></div>`;
