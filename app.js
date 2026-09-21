@@ -516,7 +516,8 @@ function computePortfolio(priceMap) {
       else if (pinfo.prevClose != null) day = openQty * (price - pinfo.prevClose);
       open.push({ asset: a, cls: A.cls, qty: openQty, cost: openCost, avg: openCost / openQty,
         price, status: pinfo.status || "none", changePct: pinfo.changePct, mv, upl,
-        ret: openCost ? upl / openCost : 0, realized, venues, day });
+        // coût nul (equity attribuée : BSPCE, RSU) → le rendement n'est pas 0 %, il est indéfini
+        ret: openCost ? upl / openCost : null, realized, venues, day });
       totals.mv += mv; totals.cost += openCost; totals.upl += upl; totals.day += day;
       byClass[A.cls].mv += mv; byClass[A.cls].cost += openCost; byClass[A.cls].upl += upl;
     }
@@ -525,7 +526,7 @@ function computePortfolio(priceMap) {
     if (A.sellQty > EPS) {
       realizedRows.push({ asset: a, cls: A.cls, qty: A.sellQty, avgBuy: A.costConsumed / A.sellQty,
         cost: A.costConsumed, avgSell: A.sellProceeds / A.sellQty, proceeds: A.sellProceeds,
-        realized, ret: A.costConsumed ? realized / A.costConsumed : 0, venues, stillOpen });
+        realized, ret: A.costConsumed ? realized / A.costConsumed : null, venues, stillOpen });
     }
   }
   open.sort((a, b) => b.mv - a.mv);
