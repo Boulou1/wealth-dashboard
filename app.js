@@ -824,7 +824,10 @@ function renderWallets() {
       }
       const tq = trackedQty(h.coin);
       if (Math.abs(tq) < 1e-9 && h.usd < 1) return "";                     // poussière non suivie
-      const tol = Math.max(Math.abs(tq) * 0.005, 1e-6);
+      // 0.5% en quantité, mais jamais moins que ~$2 : sur un reliquat de gas (0.011 ETH),
+      // une tolérance purement relative est plus serrée que la dérive normale des frais réseau.
+      const px = h.qty ? h.usd / h.qty : 0;
+      const tol = Math.max(Math.abs(tq) * 0.005, 1e-6, px > 0 ? 2 / px : 0);
       return Math.abs(h.qty - tq) <= tol
         ? `<span class="pos">✓ ${h.coin}: matches the ${fmtQty(tq)} tracked</span>`
         : `<span class="neg">⚠ ${h.coin}: on-chain ${fmtQty(h.qty)} vs ${fmtQty(tq)} tracked</span>`;
