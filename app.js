@@ -119,8 +119,10 @@ const totalCashUSD = () => { const b = cashBalances(); return Object.keys(b).red
 
 /* ---- On-chain wallets (live). Hyperliquid: public API, CORS-open, no key needed. ---- */
 const HL_STABLE = /^(USDC|USDT0?|USDE|USDH|FEUSD|USDXL)$/i;
-// Jetons spot bridgés sur Hyperliquid : pas de perp donc absents d'allMids. Prix via CoinGecko.
-const HL_SPOT_CG = { ONEAR: "near", UNEAR: "near", UBTC: "bitcoin", UETH: "ethereum", USOL: "solana" };
+// Jetons spot bridgés sur Hyperliquid : pas de perp, donc absents d'allMids et valorisés 0.
+// Prix pris sur Binance (CORS ouvert, pas de clé) plutôt que CoinGecko : le quota gratuit de
+// CoinGecko sert déjà à tout le book crypto, et le saturer ferait tomber TOUS les prix.
+const HL_SPOT_BINANCE = { ONEAR: "NEARUSDT", UNEAR: "NEARUSDT", UBTC: "BTCUSDT", UETH: "ETHUSDT", USOL: "SOLUSDT" };
 async function fetchHyperliquid(addr) {
   const post = body => fetchJSON("https://api.hyperliquid.xyz/info", {
     method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
@@ -143,21 +145,20 @@ async function fetchHyperliquid(addr) {
   const rawSpot = ((spot && spot.balances) || []).filter(b => parseFloat(b.total) > 0);
   // Bridged spot tokens (Unit & co: ONEAR, UBTC…) have no perp, so allMids doesn't price them.
   // They were being valued at 0 — 104 ONEAR is real money. Fall back to CoinGecko for those.
-  const needCg = rawSpot.filter(b => !HL_STABLE.test(b.coin) && !isFinite(parseFloat((mids || {})[b.coin])))
-    .map(b => HL_SPOT_CG[b.coin.toUpperCase()]).filter(Boolean);
-  let cgSpot = {};
-  if (needCg.length) {
+  const needSyms = [...new Set(rawSpot
+    .filter(b => !HL_STABLE.test(b.coin) && !isFinite(parseFloat((mids || {})[b.coin])))
+    .map(b => HL_SPOT_BINANCE[b.coin.toUpperCase()]).filter(Boolean))];
+  const bnb = {};
+  if (needSyms.length) {
     try {
-      cgSpot = await fetchJSON(`https://api.coingecko.com/api/v3/simple/price?ids=${[...new Set(needCg)].join(",")}&vs_currencies=usd`);
-    } catch (e) { cgSpot = {}; }
+      const rows = await fetchJSON(`https://api.binance.com/api/v3/ticker/price?symbols=${encodeURIComponent(JSON.stringify(needSyms))}`);
+      for (const r of (Array.isArray(rows) ? rows : [rows])) bnb[r.symbol] = parseFloat(r.price);
+    } catch (e) { /* pas de prix → on laisse 0, on n'invente pas */ }
   }
   for (const b of rawSpot) {
     const q = parseFloat(b.total);
     let px = HL_STABLE.test(b.coin) ? 1 : parseFloat((mids || {})[b.coin]);
-    if (!isFinite(px)) {
-      const id = HL_SPOT_CG[b.coin.toUpperCase()];
-      px = (id && cgSpot[id] && cgSpot[id].usd) || 0;   // toujours pas de prix → 0, on n'invente pas
-    }
+    if (!isFinite(px)) px = bnb[HL_SPOT_BINANCE[b.coin.toUpperCase()]] || 0;
     spotUSD += q * px;
     holdings.push({ coin: b.coin, qty: q, px, usd: q * px });
   }
