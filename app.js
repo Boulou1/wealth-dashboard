@@ -119,6 +119,8 @@ const totalCashUSD = () => { const b = cashBalances(); return Object.keys(b).red
 
 /* ---- On-chain wallets (live). Hyperliquid: public API, CORS-open, no key needed. ---- */
 const HL_STABLE = /^(USDC|USDT0?|USDE|USDH|FEUSD|USDXL)$/i;
+// Jetons spot bridgés sur Hyperliquid : pas de perp donc absents d'allMids. Prix via CoinGecko.
+const HL_SPOT_CG = { ONEAR: "near", UNEAR: "near", UBTC: "bitcoin", UETH: "ethereum", USOL: "solana" };
 async function fetchHyperliquid(addr) {
   const post = body => fetchJSON("https://api.hyperliquid.xyz/info", {
     method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
@@ -138,11 +140,24 @@ async function fetchHyperliquid(addr) {
   const states = [perp, ...dexStates].filter(Boolean);
   const perps = states.reduce((s, st) => s + (parseFloat((st.marginSummary || {}).accountValue) || 0), 0);
   let spotUSD = 0; const holdings = [];
-  for (const b of ((spot && spot.balances) || [])) {
+  const rawSpot = ((spot && spot.balances) || []).filter(b => parseFloat(b.total) > 0);
+  // Bridged spot tokens (Unit & co: ONEAR, UBTC…) have no perp, so allMids doesn't price them.
+  // They were being valued at 0 — 104 ONEAR is real money. Fall back to CoinGecko for those.
+  const needCg = rawSpot.filter(b => !HL_STABLE.test(b.coin) && !isFinite(parseFloat((mids || {})[b.coin])))
+    .map(b => HL_SPOT_CG[b.coin.toUpperCase()]).filter(Boolean);
+  let cgSpot = {};
+  if (needCg.length) {
+    try {
+      cgSpot = await fetchJSON(`https://api.coingecko.com/api/v3/simple/price?ids=${[...new Set(needCg)].join(",")}&vs_currencies=usd`);
+    } catch (e) { cgSpot = {}; }
+  }
+  for (const b of rawSpot) {
     const q = parseFloat(b.total);
-    if (!(q > 0)) continue;
     let px = HL_STABLE.test(b.coin) ? 1 : parseFloat((mids || {})[b.coin]);
-    if (!isFinite(px)) px = 0;                       // unknown token → don't invent value
+    if (!isFinite(px)) {
+      const id = HL_SPOT_CG[b.coin.toUpperCase()];
+      px = (id && cgSpot[id] && cgSpot[id].usd) || 0;   // toujours pas de prix → 0, on n'invente pas
+    }
     spotUSD += q * px;
     holdings.push({ coin: b.coin, qty: q, px, usd: q * px });
   }
