@@ -1767,6 +1767,13 @@ function settingsModal() {
       <span class="muted" id="s_gh_status" style="align-self:center;font-size:.8rem"></span>
     </div>
 
+    <div class="settings-row"><div class="info"><div class="t" style="margin-top:14px">Password-only access (any browser)</div>
+      <div class="d">Publishes <b>vault.json</b> to the app repo: the token above, encrypted with your dashboard password (PBKDF2 600k + AES-256-GCM). Any browser then needs <b>only the password</b> — it decrypts the token locally and pulls your data. The file is public, so use a long password. To publish, the token must also have <b>Contents: Read and write</b> on the app repo. ${VAULT ? `<span style="color:var(--pos)">Vault active${VAULT.created ? " (published " + new Date(VAULT.created).toLocaleDateString("en-GB", { day: "2-digit", month: "short", year: "numeric" }) + ")" : ""}</span> — re-publish after changing the token or password.` : "No vault published on this site yet."}</div></div></div>
+    <div class="field full"><label>App repo (where this site is deployed)</label><input id="s_vault_repo" value="${ghCfg().appRepo || appRepoGuess()}" placeholder="owner/wealth-dashboard"></div>
+    <div class="modal-actions" style="margin-top:8px">
+      <button class="btn primary" id="s_vault_pub">🔐 Publish vault</button>
+    </div>
+
     <div class="settings-row"><div class="info"><div class="t" style="margin-top:14px">Your data</div>
       <div class="d">Everything lives in this browser. Export to back up or move devices.</div></div></div>
     <div class="modal-actions" style="margin-top:8px">
@@ -1805,6 +1812,7 @@ function settingsModal() {
   ghStatus();
   $("#s_gh_backup", m).onclick = async () => { saveGh(); const b = $("#s_gh_backup", m); b.disabled = true; b.textContent = "Backing up…"; await ghBackup(false); b.disabled = false; b.textContent = "⬆ Back up now"; ghStatus(); };
   $("#s_gh_restore", m).onclick = async () => { if (!confirm("Restore from GitHub? This replaces your current local data with the backup.")) return; saveGh(); await ghRestore(); ghStatus(); };
+  $("#s_vault_pub", m).onclick = () => { saveGh(); const r = $("#s_vault_repo", m).value.trim(); const cc = ghCfg(); cc.appRepo = r; setGhCfg(cc); vaultModal(r); };
   $("#s_export", m).onclick = exportData;
   $("#s_import", m).onclick = () => $("#s_file", m).click();
   $("#s_file", m).onchange = e => importData(e.target.files[0], close);
@@ -1879,9 +1887,10 @@ function backupPayload() {   // full snapshot; token lives outside STATE so it i
     settings: { finnhubKey: STATE.settings.finnhubKey || "", multipliers: STATE.settings.multipliers || {} },
     fxEURUSD: STATE.fxEURUSD };
 }
-async function ghApi(method, path, body) {
+async function ghApi(method, path, body) { return ghApiIn(ghCfg().repo, method, path, body); }
+async function ghApiIn(repo, method, path, body) {   // same call, explicit repo (vault.json goes to the app repo)
   const c = ghCfg();
-  const r = await fetch(`https://api.github.com/repos/${c.repo}/${path}`, {
+  const r = await fetch(`https://api.github.com/repos/${repo}/${path}`, {
     method, headers: { Authorization: `Bearer ${c.token}`, Accept: "application/vnd.github+json" },
     body: body ? JSON.stringify(body) : undefined,
   });
@@ -1997,22 +2006,30 @@ async function initGate() {
   if (sessionStorage.getItem("unlocked") === "1") { gate.classList.add("hidden"); app.classList.remove("hidden"); boot(); return true; }
 
   const title = $("#gateTitle"), sub = $("#gateSub"), inp = $("#gateInput"), err = $("#gateErr"), btn = $("#gateBtn");
-  const setup = !sharedMode && !hash;                              // only offer "set" for per-device local use
+  VAULT = await loadVault();                                       // deploy with vault.json → the password works on any device
+  const setup = !sharedMode && !hash && !VAULT;                    // only offer "set" for per-device local use
   title.textContent = setup ? "Set a passcode" : "Enter password";
-  sub.textContent = setup ? "Protects this dashboard on this device." : (sharedMode ? "Enter the page password." : "Welcome back.");
+  sub.textContent = setup ? "Protects this dashboard on this device." : (sharedMode ? "Enter the page password." : VAULT ? "Your password unlocks the dashboard on any device." : "Welcome back.");
   btn.textContent = setup ? "Set & unlock" : "Unlock";
+  if (VAULT) { inp.inputMode = "text"; inp.placeholder = "password"; }
 
   const submit = async () => {
     const val = inp.value;
-    if (!val) return;
+    if (!val || btn.disabled) return;
     if (setup) {
       if (val.length < 4) { err.textContent = "Use at least 4 characters."; return; }
       localStorage.setItem("gateHash", await sha256(val));
       unlock();
-    } else {
-      if (await sha256(val) === hash) unlock();
-      else { err.textContent = "Wrong passcode."; inp.value = ""; inp.focus(); }
-    }
+    } else if (hash && await sha256(val) === hash) {
+      unlock();   // known device; if it has no token yet, get it from the vault and pull the data
+      if (VAULT && !ghReady()) vaultApply(val).then(ok => { if (!ok) return; if (!STATE.trades || !STATE.trades.length) ghRestore(); else checkForNewerBackup(); });
+    } else if (VAULT) {
+      btn.disabled = true; btn.textContent = "Unlocking…"; err.textContent = "";
+      const ok = await vaultApply(val);                             // ~1s of key derivation
+      btn.disabled = false; btn.textContent = "Unlock";
+      if (ok) { localStorage.setItem("gateHash", await sha256(val)); unlock(); }   // boot() then pulls the backup (token set, no local trades)
+      else { err.textContent = "Wrong password."; inp.value = ""; inp.focus(); }
+    } else { err.textContent = "Wrong passcode."; inp.value = ""; inp.focus(); }
   };
   const unlock = () => { sessionStorage.setItem("unlocked", "1"); gate.classList.add("hidden"); app.classList.remove("hidden"); boot(); };
   btn.onclick = submit;
@@ -2025,6 +2042,7 @@ function changePasscodeModal() {
   m.innerHTML = `<h3>Change passcode <button class="x">&times;</button></h3>
     <div class="field full"><label>New passcode</label><input id="p_new" type="password" placeholder="At least 4 characters"></div>
     <div class="field full" style="margin-top:10px"><label>Confirm</label><input id="p_conf" type="password"></div>
+    ${VAULT ? `<div class="muted" style="font-size:.8rem;margin-top:8px">This changes the passcode on this device only. For password-only access on other browsers, re-publish the vault (Settings) with the new password.</div>` : ""}
     <div class="modal-actions"><button class="btn" id="p_cancel">Cancel</button><button class="btn primary" id="p_ok">Update</button></div>`;
   const back = openModal(m); const close = () => back.remove();
   m.querySelector(".x").onclick = close; $("#p_cancel", m).onclick = close;
@@ -2044,6 +2062,96 @@ function printReport() {
     <div class="ph-sub">${new Date().toLocaleString("en-GB", { day: "2-digit", month: "long", year: "numeric", hour: "2-digit", minute: "2-digit" })}
       &nbsp;·&nbsp; Total value <b>${money(totalValue)}</b> &nbsp;·&nbsp; ${VIEW.ccy}</div>`;
   window.print();
+}
+
+/* ============================ Password-only access (encrypted vault) ============================ */
+/* vault.json — committed to the PUBLIC app repo — holds the GitHub token + data-repo name encrypted
+   with the dashboard password: PBKDF2-SHA256 (600k iterations) → AES-256-GCM. Any browser can then
+   unlock with just the password: it decrypts the token locally and pulls data.json from the private repo.
+   The blob is public, so the password must be long (8+ chars enforced; prefer a passphrase). */
+const VAULT_ITER = 600000;
+let VAULT = null;   // parsed vault.json of this deploy, if any
+const b64u8 = u8 => btoa(String.fromCharCode(...u8));
+const u8b64 = s => Uint8Array.from(atob(s), c => c.charCodeAt(0));
+async function vaultKey(password, salt, iter) {
+  const km = await crypto.subtle.importKey("raw", new TextEncoder().encode(password.normalize("NFKC")), "PBKDF2", false, ["deriveKey"]);
+  return crypto.subtle.deriveKey({ name: "PBKDF2", hash: "SHA-256", salt, iterations: iter }, km, { name: "AES-GCM", length: 256 }, false, ["encrypt", "decrypt"]);
+}
+async function vaultEncrypt(password, obj) {
+  const salt = crypto.getRandomValues(new Uint8Array(16)), iv = crypto.getRandomValues(new Uint8Array(12));
+  const key = await vaultKey(password, salt, VAULT_ITER);
+  const ct = await crypto.subtle.encrypt({ name: "AES-GCM", iv }, key, new TextEncoder().encode(JSON.stringify(obj)));
+  return { v: 1, kdf: "PBKDF2-SHA256", cipher: "AES-256-GCM", iter: VAULT_ITER, salt: b64u8(salt), iv: b64u8(iv), ct: b64u8(new Uint8Array(ct)), created: new Date().toISOString() };
+}
+async function vaultDecrypt(password, v) {
+  const key = await vaultKey(password, u8b64(v.salt), v.iter || VAULT_ITER);
+  const pt = await crypto.subtle.decrypt({ name: "AES-GCM", iv: u8b64(v.iv) }, key, u8b64(v.ct));
+  return JSON.parse(new TextDecoder().decode(pt));
+}
+async function loadVault() {   // same-origin file next to index.html; absent on local / no-vault deploys
+  try {
+    const r = await fetch("vault.json?ts=" + Date.now(), { cache: "no-store" });
+    if (!r.ok) return null;
+    const v = await r.json(); return v && v.ct && v.salt && v.iv ? v : null;
+  } catch (e) { return null; }
+}
+async function vaultApply(password) {   // decrypt → install token/repo in this browser. false = wrong password
+  if (!VAULT) return false;
+  let secret;
+  try { secret = await vaultDecrypt(password, VAULT); } catch (e) { return false; }
+  if (!secret || !secret.token || !secret.repo) return false;
+  const c = ghCfg(); c.token = secret.token; c.repo = secret.repo; if (secret.branch) c.branch = secret.branch;
+  if (c.auto == null) c.auto = true; setGhCfg(c);
+  return true;
+}
+function appRepoGuess() {   // boulou1.github.io/wealth-dashboard/ → Boulou1/wealth-dashboard
+  const m = location.hostname.match(/^([^.]+)\.github\.io$/i), p = location.pathname.split("/").filter(Boolean)[0];
+  return m && p ? `${m[1]}/${p}` : "";
+}
+async function ghPutFileIn(repo, path, contentStr, message, branch = "main") {   // create-or-update in an explicit repo
+  let sha = null;
+  try { sha = (await ghApiIn(repo, "GET", `contents/${encodeURIComponent(path)}?ref=${encodeURIComponent(branch)}`)).sha; } catch (e) {}
+  return ghApiIn(repo, "PUT", `contents/${encodeURIComponent(path)}`, { message, content: b64enc(contentStr), sha: sha || undefined, branch });
+}
+function downloadText(name, text) {
+  const a = document.createElement("a"); a.href = URL.createObjectURL(new Blob([text], { type: "application/json" })); a.download = name; a.click();
+  setTimeout(() => URL.revokeObjectURL(a.href), 2000);
+}
+function vaultModal(appRepo) {
+  const c = ghCfg();
+  if (!c.token || !c.repo) return toast("Set the private data repo + token first (section above)", true);
+  const m = el("div", "modal");
+  m.innerHTML = `<h3>Publish encrypted vault <button class="x">&times;</button></h3>
+    <div class="muted" style="font-size:.85rem;margin-bottom:10px">Your GitHub token for <b>${c.repo}</b> will be encrypted with this password and committed as <b>vault.json</b> to <b>${appRepo || "the app repo"}</b>. From then on, any browser opening the site needs only this password. It becomes the passcode on this device too.</div>
+    <div class="field full"><label>Password (8+ characters — the file is public, prefer a long passphrase)</label><input id="v_pw" type="password" autocomplete="new-password"></div>
+    <div class="field full" style="margin-top:10px"><label>Confirm</label><input id="v_pw2" type="password" autocomplete="new-password"></div>
+    <div class="modal-actions"><button class="btn" id="v_cancel">Cancel</button><button class="btn" id="v_dl">⬇ Download only</button><button class="btn primary" id="v_ok">🔐 Encrypt &amp; publish</button></div>`;
+  const back = openModal(m); const close = () => back.remove();
+  m.querySelector(".x").onclick = close; $("#v_cancel", m).onclick = close;
+  const build = async () => {
+    const a = $("#v_pw", m).value, b = $("#v_pw2", m).value;
+    if (a.length < 8) { toast("Use at least 8 characters", true); return null; }
+    if (a !== b) { toast("Passwords don't match", true); return null; }
+    const v = await vaultEncrypt(a, { token: c.token, repo: c.repo, branch: c.branch || "main" });
+    localStorage.setItem("gateHash", await sha256(a));   // keep this device's passcode in sync with the vault
+    return { v, text: JSON.stringify(v, null, 2) + "\n" };
+  };
+  $("#v_dl", m).onclick = async () => { const r = await build(); if (!r) return; downloadText("vault.json", r.text); VAULT = r.v; close(); toast("vault.json downloaded — commit it to the app repo root"); };
+  $("#v_ok", m).onclick = async () => {
+    if (!appRepo) return toast("Enter the app repo (owner/name) first", true);
+    const btn = $("#v_ok", m); btn.disabled = true; btn.textContent = "Encrypting…";
+    const r = await build(); if (!r) { btn.disabled = false; btn.textContent = "🔐 Encrypt & publish"; return; }
+    try {
+      btn.textContent = "Publishing…";
+      await ghPutFileIn(appRepo, "vault.json", r.text, "Publish encrypted vault (password-only access)");
+      VAULT = r.v; const cc = ghCfg(); cc.appRepo = appRepo; setGhCfg(cc);
+      close(); toast("Vault published ✓ — any browser can now unlock with just the password");
+    } catch (e) {
+      btn.disabled = false; btn.textContent = "🔐 Encrypt & publish";
+      toast("Publish failed (" + e.message.slice(0, 60) + ") — the token needs Contents: write on " + appRepo + ". Or use ⬇ Download only and commit vault.json by hand.", true);
+    }
+  };
+  $("#v_pw", m).focus();
 }
 
 /* ============================ Boot ============================ */

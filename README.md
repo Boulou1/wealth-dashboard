@@ -114,6 +114,24 @@ of these instead of GitHub Pages — same files, drag-and-drop:
   exited assets — that's the difference you'll see between the two numbers.
 - Base currency is **USD**; the EUR toggle converts at the live rate.
 
+## Password-only access from any browser
+
+By default the GitHub token lives only in the browser where you pasted it, so a
+new browser shows an empty dashboard until you paste it again. To make the
+password alone enough everywhere:
+
+1. On a device that already has the token: **⚙ Settings → Password-only access →
+   🔐 Publish vault**, choose a long password (8+ chars; a passphrase is best).
+2. The app encrypts the token with that password (PBKDF2-SHA256, 600k iterations
+   → AES-256-GCM) and commits the blob as `vault.json` to the app repo. For the
+   publish step the token needs **Contents: Read and write** on the app repo too
+   (or use **⬇ Download only** and commit `vault.json` by hand).
+3. From then on, any browser opening the site asks for the password, decrypts the
+   token locally and pulls `data.json` from the private data repo.
+
+`vault.json` is public, so the password is the only thing protecting the token:
+pick a long one, and re-publish after rotating the token or changing the password.
+
 ## Backups
 
 **⚙ Settings → Export JSON** downloads everything. Keep it safe / re-import on a
