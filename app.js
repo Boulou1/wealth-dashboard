@@ -2123,14 +2123,14 @@ function vaultModal(appRepo) {
   const m = el("div", "modal");
   m.innerHTML = `<h3>Publish encrypted vault <button class="x">&times;</button></h3>
     <div class="muted" style="font-size:.85rem;margin-bottom:10px">Your GitHub token for <b>${c.repo}</b> will be encrypted with this password and committed as <b>vault.json</b> to <b>${appRepo || "the app repo"}</b>. From then on, any browser opening the site needs only this password. It becomes the passcode on this device too.</div>
-    <div class="field full"><label>Password (8+ characters — the file is public, prefer a long passphrase)</label><input id="v_pw" type="password" autocomplete="new-password"></div>
+    <div class="field full"><label>Password (12+ characters, not digits only — vault.json is public, so use a long passphrase)</label><input id="v_pw" type="password" autocomplete="new-password"></div>
     <div class="field full" style="margin-top:10px"><label>Confirm</label><input id="v_pw2" type="password" autocomplete="new-password"></div>
     <div class="modal-actions"><button class="btn" id="v_cancel">Cancel</button><button class="btn" id="v_dl">⬇ Download only</button><button class="btn primary" id="v_ok">🔐 Encrypt &amp; publish</button></div>`;
   const back = openModal(m); const close = () => back.remove();
   m.querySelector(".x").onclick = close; $("#v_cancel", m).onclick = close;
   const build = async () => {
     const a = $("#v_pw", m).value, b = $("#v_pw2", m).value;
-    if (a.length < 8) { toast("Use at least 8 characters", true); return null; }
+    if (a.length < 12 || /^[0-9]*$/.test(a)) { toast("Use 12+ characters, not digits only (the vault file is public)", true); return null; }
     if (a !== b) { toast("Passwords don't match", true); return null; }
     const v = await vaultEncrypt(a, { token: c.token, repo: c.repo, branch: c.branch || "main" });
     localStorage.setItem("gateHash", await sha256(a));   // keep this device's passcode in sync with the vault
