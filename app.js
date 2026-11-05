@@ -259,22 +259,19 @@ async function fetchChainWallet(w) {
     // Le même compte existe sur les L2. Les soldes y sont invisibles depuis le mainnet, donc on
     // les lit aussi et on les étiquette par chaîne — pas d'agrégation avec le mainnet, sinon la
     // vérification "on-chain vs suivi" de l'ETH mainnet deviendrait fausse.
-    const L2 = [["Base", "https://base-rpc.publicnode.com", "ETH", null],
-                ["HyperEVM", "https://rpc.hyperliquid.xyz/evm", "HYPE", "HYPEUSDT"]];
-    for (const [chain, rpc, sym, bnSym] of L2) {
+    // [chaîne, rpc, symbole affiché, actif suivi dans le journal (pour le prix et la vérification), id CoinGecko]
+    // Binance est injoignable depuis le navigateur (CORS), donc le prix vient du journal ou de CoinGecko.
+    const L2 = [["Base", "https://base-rpc.publicnode.com", "ETH", null, null],
+                ["HyperEVM", "https://rpc.hyperliquid.xyz/evm", "HYPE", "HYPERLIQUID", "hyperliquid"]];
+    for (const [chain, rpc, sym, track, cgId] of L2) {
       try {
         const rb = await fetchJSON(rpc, { method: "POST", headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "eth_getBalance", params: [w.address, "latest"] }) });
         const q = parseInt(rb.result || "0x0", 16) / 1e18;
         if (!(q > 1e-9)) continue;
-        let p2 = px(sym);
-        if (!p2 && bnSym) {
-          try {
-            const t = await fetchJSON(`https://api.binance.com/api/v3/ticker/price?symbol=${bnSym}`);
-            p2 = parseFloat(t.price) || 0;
-          } catch (e2) { p2 = 0; }
-        }
-        holdings.push({ coin: `${sym}·${chain}`, qty: q, px: p2, usd: q * p2, offchain: true });
+        let p2 = px(sym) || (track ? px(track) : 0);
+        if (!p2 && cgId) { const r2 = await cgPrice([cgId]); p2 = ((r2[cgId] || {}).usd) || 0; }
+        holdings.push({ coin: `${sym}·${chain}`, qty: q, px: p2, usd: q * p2, offchain: true, track: track || undefined });
       } catch (e) { /* L2 best-effort */ }
     }
   } else if (w.kind === "bitcoin") {
@@ -860,7 +857,7 @@ function renderWallets() {
           ? `<span class="pos">✓ ${h.coin}: matches the ${moneyIn(cb, h.coin, 0)} cash</span>`
           : `<span class="neg">⚠ ${h.coin}: on-chain ${fmtQty(h.qty)} vs ${moneyIn(cb, h.coin, 0)} in cash</span>`;
       }
-      const tq = trackedQty(h.coin);
+      const tq = trackedQty(h.track || h.coin);                             // HYPE·HyperEVM ↔ HYPERLIQUID
       if (Math.abs(tq) < 1e-9 && h.usd < 1) return "";                     // poussière non suivie
       // Rien à rapprocher : ce n'est pas un écart de suivi, juste un solde hors trade log.
       if (Math.abs(tq) < 1e-9) return `<span class="muted">◦ ${h.coin}: ${fmtQty(h.qty)} on-chain, hors trade log (${money(h.usd)})</span>`;
