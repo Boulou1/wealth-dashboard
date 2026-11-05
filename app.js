@@ -1173,8 +1173,16 @@ function recordSnapshot(P) {
     cash: totalCashUSD(), savings: savingsTotals().usd, wallets: walletTotals().usd, auto: true };
   const i = STATE.snapshots.findIndex(x => x.date === today);
   if (i >= 0) {
-    if (Math.abs((STATE.snapshots[i].navUSD || 0) - total) > 1) { STATE.snapshots[i] = { ...STATE.snapshots[i], ...rec }; saveLocal(); }
-  } else { STATE.snapshots.push(rec); saveLocal(); }
+    if (Math.abs((STATE.snapshots[i].navUSD || 0) - total) > 1) { STATE.snapshots[i] = { ...STATE.snapshots[i], ...rec }; saveLocal(); SNAP_DIRTY = true; }
+  } else { STATE.snapshots.push(rec); saveLocal(); SNAP_DIRTY = true; }
+  flushSnapshot();
+}
+/* Les points quotidiens ne vivaient qu'en localStorage : chaque "Pull latest" les écrasait par ceux du dépôt,
+   donc la courbe s'arrêtait au dernier backup. On les pousse maintenant, mais seulement quand on sait que le
+   dépôt n'a pas une version plus récente (sinon on écraserait des trades ajoutés côté GitHub). */
+let SNAP_DIRTY = false, REMOTE_STATE = "unknown";   // "unknown" | "synced" | "newer"
+function flushSnapshot() {
+  if (SNAP_DIRTY && REMOTE_STATE === "synced" && typeof ghAutoBackup === "function") { SNAP_DIRTY = false; ghAutoBackup(); }
 }
 
 function renderSparkline() {
@@ -1973,7 +1981,11 @@ async function ghRestore() {
     const j = JSON.parse(b64dec(d.content));
     if (!Array.isArray(j.trades)) throw new Error("backup has no trades");
     STATE.trades = j.trades;
-    if (Array.isArray(j.snapshots)) STATE.snapshots = j.snapshots;
+    if (Array.isArray(j.snapshots)) {   // union par date : on garde les points quotidiens pris sur cet appareil
+      const byDate = new Map((STATE.snapshots || []).filter(x => x && x.date).map(x => [x.date, x]));
+      for (const x of j.snapshots) if (x && x.date) byDate.set(x.date, x);
+      STATE.snapshots = [...byDate.values()].sort((a, b) => a.date < b.date ? -1 : 1);
+    }
     if (Array.isArray(j.cash)) STATE.cash = j.cash;
     if (Array.isArray(j.interest)) STATE.interest = j.interest;
     if (Array.isArray(j.savings)) STATE.savings = j.savings;
@@ -1986,7 +1998,8 @@ async function ghRestore() {
     D_EXPORT_STAMP = j.exported || null;
     const c2 = ghCfg(); c2.syncedExport = D_EXPORT_STAMP; setGhCfg(c2);
     const b = $("#syncBanner"); if (b) b.remove();
-    saveLocal(); render(); refreshPrices();   // just pulled from the repo — don't immediately push it back
+    REMOTE_STATE = "synced";
+    saveLocal(); render(); refreshPrices();   // render() enregistre le point du jour → flushSnapshot() le pousse (fusionné)
     toast(`Restored ${STATE.trades.length} trades from GitHub ✓`);
   } catch (e) { toast("Restore failed: " + e.message, true); }
 }
@@ -2224,7 +2237,8 @@ async function checkForNewerBackup() {
     const d = await ghApi("GET", `contents/data.json?ref=${encodeURIComponent(c.branch || "main")}`);
     const j = JSON.parse(b64dec(d.content));
     const remote = j.exported, seen = c.syncedExport;
-    if (!remote || remote === seen) return;
+    if (!remote || remote === seen) { REMOTE_STATE = "synced"; flushSnapshot(); return; }
+    REMOTE_STATE = "newer";
     const el2 = el("div", "sync-banner");
     el2.id = "syncBanner";
     el2.innerHTML = `<span>☁️ A newer backup is available on GitHub
