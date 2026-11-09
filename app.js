@@ -1164,6 +1164,10 @@ function renderAllocation(P) {
 function recordSnapshot(P) {
   const total = P.totals.mv + totalCashUSD() + savingsTotals().usd + walletTotals().usd;
   if (!(total > 0)) return;
+  // Pas de point tant que la valorisation est incomplète (prix pas encore chargés, CoinGecko/Finnhub en échec,
+  // wallet compté sans lecture) : un point à moitié vide fait plonger la courbe (ex. 07/11/2026, crypto = 0).
+  if (P.open.some(o => o.cost > 0 && !(o.price > 0))) return;
+  if ((STATE.wallets || []).some(w => w.counted !== false && !(STATE.liveWallets || {})[w.address] && !isFinite(w.manualValue))) return;
   const today = new Date().toISOString().slice(0, 10);
   STATE.snapshots = STATE.snapshots || [];
   const rec = { date: today, navUSD: total, stocks: P.byClass.stock.mv, crypto: P.byClass.crypto.mv,
@@ -1205,14 +1209,26 @@ function renderSparkline() {
   const span = (pts.at(-1).t - pts[0].t) || 1;
   const X = t => ((t - pts[0].t) / span) * W, Y = v => H - ((v - lo) / (hi - lo)) * H;
   const P2 = pts.map(p => [X(p.t), Y(p.v)]);
-  let d = `M${P2[0][0].toFixed(1)},${P2[0][1].toFixed(1)}`;
-  for (let i = 0; i < P2.length - 1; i++) {             // Catmull-Rom → Bézier (courbe lissée)
-    const p0 = P2[Math.max(0, i - 1)], p1 = P2[i], p2 = P2[i + 1], p3 = P2[Math.min(P2.length - 1, i + 2)];
-    d += `C${(p1[0] + (p2[0] - p0[0]) / 6).toFixed(1)},${(p1[1] + (p2[1] - p0[1]) / 6).toFixed(1)} ${(p2[0] - (p3[0] - p1[0]) / 6).toFixed(1)},${(p2[1] - (p3[1] - p1[1]) / 6).toFixed(1)} ${p2[0].toFixed(1)},${p2[1].toFixed(1)}`;
+  // Interpolation cubique monotone (Fritsch-Carlson) : lissée mais sans dépassement entre deux points,
+  // contrairement à Catmull-Rom qui dessinait des bosses fantômes quand les points sont espacés.
+  const n = P2.length, xs = P2.map(p => p[0]), ys = P2.map(p => p[1]);
+  const dx = [], sl = [];
+  for (let i = 0; i < n - 1; i++) { dx.push(xs[i + 1] - xs[i] || 1e-6); sl.push((ys[i + 1] - ys[i]) / dx[i]); }
+  const m = new Array(n).fill(0);
+  if (n > 1) { m[0] = sl[0]; m[n - 1] = sl[n - 2]; }
+  for (let i = 1; i < n - 1; i++) {
+    if (sl[i - 1] * sl[i] <= 0) m[i] = 0;
+    else { const w1 = 2 * dx[i] + dx[i - 1], w2 = dx[i] + 2 * dx[i - 1]; m[i] = (w1 + w2) / (w1 / sl[i - 1] + w2 / sl[i]); }
+  }
+  let d = `M${xs[0].toFixed(1)},${ys[0].toFixed(1)}`;
+  for (let i = 0; i < n - 1; i++) {
+    const h = dx[i];
+    d += `C${(xs[i] + h / 3).toFixed(1)},${(ys[i] + m[i] * h / 3).toFixed(1)} ${(xs[i + 1] - h / 3).toFixed(1)},${(ys[i + 1] - m[i + 1] * h / 3).toFixed(1)} ${xs[i + 1].toFixed(1)},${ys[i + 1].toFixed(1)}`;
   }
   const first = pts[0].v, last = pts.at(-1).v, delta = last - first, up = delta >= 0;
   const col = up ? "var(--pos)" : "var(--neg)";
-  const dots = pts.filter(p => p.real).map(p =>
+  const realPts = pts.filter(p => p.real);
+  const dots = (realPts.length > 40 ? [] : realPts).map(p =>   // au-delà de 40 points, les ronds ne font que du bruit
     `<circle cx="${X(p.t).toFixed(1)}" cy="${Y(p.v).toFixed(1)}" r="2.8" fill="var(--bg-2)" stroke="${col}" stroke-width="1.6"></circle>`).join("");
   const grid = [0.25, 0.5, 0.75].map(f => `<line x1="0" x2="${W}" y1="${(H * f).toFixed(1)}" y2="${(H * f).toFixed(1)}" stroke="rgba(255,255,255,.05)"></line>`).join("");
   const segBtns = ["3M", "1Y", "ALL"].map(r => `<button data-range="${r}" class="${r === range ? "active" : ""}">${r === "ALL" ? "All" : r}</button>`).join("");
