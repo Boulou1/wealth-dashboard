@@ -1994,9 +1994,12 @@ async function ghRestore() {
     const j = JSON.parse(b64dec(d.content));
     if (!Array.isArray(j.trades)) throw new Error("backup has no trades");
     STATE.trades = j.trades;
-    if (Array.isArray(j.snapshots)) {   // union par date : on garde les points quotidiens pris sur cet appareil
-      const byDate = new Map((STATE.snapshots || []).filter(x => x && x.date).map(x => [x.date, x]));
-      for (const x of j.snapshots) if (x && x.date) byDate.set(x.date, x);
+    if (Array.isArray(j.snapshots)) {   // le dépôt fait foi jusqu'à son dernier point (un point supprimé côté dépôt ne
+      // doit pas revenir depuis cet appareil) ; on ne garde en local que les points quotidiens plus récents
+      const remote = j.snapshots.filter(x => x && x.date);
+      const lastRemote = remote.reduce((m, x) => x.date > m ? x.date : m, "");
+      const byDate = new Map((STATE.snapshots || []).filter(x => x && x.date && x.date > lastRemote).map(x => [x.date, x]));
+      for (const x of remote) byDate.set(x.date, x);
       STATE.snapshots = [...byDate.values()].sort((a, b) => a.date < b.date ? -1 : 1);
     }
     if (Array.isArray(j.cash)) STATE.cash = j.cash;
