@@ -824,8 +824,8 @@ function renderKPIs(P) {
   else {
     const chipHtml = o => `<span class="mover ${cls(o.day)}"><b>${initials(o.asset)}</b> ${pct(o.changePct / 100)} <span class="muted num">${money(o.day, { sign: true })}</span></span>`;
     box.innerHTML = `<div class="panel movers"><span class="label">Today's movers</span>`
-      + `<span class="mover-group"><span class="label sub">Top 3</span>${ups.map(chipHtml).join("")}</span>`
-      + (dns.length ? `<span class="mover-group"><span class="label sub">Bottom 3</span>${dns.map(chipHtml).join("")}</span>` : "") + `</div>`;
+      + `<span class="label sub">Top 3</span><span class="mover-chips">${ups.map(chipHtml).join("")}</span>`
+      + (dns.length ? `<span class="label sub">Bottom 3</span><span class="mover-chips">${dns.map(chipHtml).join("")}</span>` : "") + `</div>`;
   }
 }
 
