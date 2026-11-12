@@ -813,14 +813,19 @@ function renderKPIs(P) {
   $("#classCards").innerHTML = cts.join("");
 
   /* ---- today's movers ---- */
-  const mv = P.open.filter(o => o.status === "live" && o.changePct != null && Math.abs(o.day) > 0.5);
-  const ups = mv.filter(o => o.day > 0).sort((a, b) => b.changePct - a.changePct).slice(0, 3);
-  const dns = mv.filter(o => o.day < 0).sort((a, b) => a.changePct - b.changePct).slice(0, 3);
+  // positions détenues uniquement (les mouvements < 0,50 $ sont ignorés), classées par variation du jour :
+  // les 3 meilleures puis les 3 pires, sans doublon quand il y a moins de 6 lignes
+  const mv = P.open.filter(o => o.status === "live" && o.changePct != null && o.qty > EPS && Math.abs(o.day) >= 0.5)
+    .sort((a, b) => b.changePct - a.changePct);
+  const ups = mv.slice(0, 3);
+  const dns = mv.slice(Math.max(ups.length, mv.length - 3)).reverse();
   const box = $("#movers");
-  if (!ups.length && !dns.length) { box.innerHTML = ""; }
+  if (!mv.length) { box.innerHTML = ""; }
   else {
     const chipHtml = o => `<span class="mover ${cls(o.day)}"><b>${initials(o.asset)}</b> ${pct(o.changePct / 100)} <span class="muted num">${money(o.day, { sign: true })}</span></span>`;
-    box.innerHTML = `<div class="panel movers"><span class="label">Today's movers</span>${[...ups, ...dns].map(chipHtml).join("")}</div>`;
+    box.innerHTML = `<div class="panel movers"><span class="label">Today's movers</span>`
+      + `<span class="mover-group"><span class="label sub">Top 3</span>${ups.map(chipHtml).join("")}</span>`
+      + (dns.length ? `<span class="mover-group"><span class="label sub">Bottom 3</span>${dns.map(chipHtml).join("")}</span>` : "") + `</div>`;
   }
 }
 
@@ -1233,6 +1238,14 @@ function renderSparkline() {
   const grid = [0.25, 0.5, 0.75].map(f => `<line x1="0" x2="${W}" y1="${(H * f).toFixed(1)}" y2="${(H * f).toFixed(1)}" stroke="rgba(255,255,255,.05)"></line>`).join("");
   const segBtns = ["3M", "1Y", "ALL"].map(r => `<button data-range="${r}" class="${r === range ? "active" : ""}">${r === "ALL" ? "All" : r}</button>`).join("");
   const fmtD = t => new Date(t).toISOString().slice(0, 10);
+  // axe des dates : 5 graduations régulières, libellés en HTML (le SVG est étiré, du texte y serait déformé)
+  const longSpan = span > 300 * DAY;
+  const fmtTick = t => new Date(t).toLocaleDateString("en-GB", longSpan
+    ? { month: "short", year: "2-digit", timeZone: "UTC" } : { day: "numeric", month: "short", timeZone: "UTC" });
+  const ticks = [0, 0.25, 0.5, 0.75, 1].map(f => ({ f, t: pts[0].t + f * span }));
+  const tickLines = ticks.slice(1, -1).map(k => `<line x1="${(k.f * W).toFixed(1)}" x2="${(k.f * W).toFixed(1)}" y1="0" y2="${H}" stroke="rgba(255,255,255,.04)"></line>`).join("");
+  const axis = `<div class="spark-axis">${ticks.map(k =>
+    `<span style="left:${(k.f * 100).toFixed(2)}%;transform:translateX(${k.f === 0 ? "0" : k.f === 1 ? "-100%" : "-50%"})">${fmtTick(k.t)}</span>`).join("")}</div>`;
 
   $("#sparkMeta").innerHTML = `
     <div><div class="label muted" style="font-size:.72rem;text-transform:uppercase;letter-spacing:.07em;font-weight:650">Net worth <span class="pdot live" style="margin-left:2px"></span></div>
@@ -1247,12 +1260,13 @@ function renderSparkline() {
         <stop offset="0" stop-color="${col}" stop-opacity="0.32"/>
         <stop offset="1" stop-color="${col}" stop-opacity="0"/>
       </linearGradient></defs>
-      ${grid}
+      ${grid}${tickLines}
       <path d="${d} L${W},${H} L0,${H} Z" fill="url(#sg)"></path>
       <path d="${d}" fill="none" stroke="${col}" stroke-width="2.2" stroke-linejoin="round" stroke-linecap="round"></path>
       ${dots}
       <line id="sparkX" y1="0" y2="${H}" stroke="rgba(255,255,255,.22)" stroke-dasharray="3 3" visibility="hidden"></line>
     </svg>
+    ${axis}
     <div id="sparkTip" class="spark-tip hidden"></div>`;
   $$("#sparkRange button").forEach(b => b.onclick = () => { VIEW.sparkRange = b.dataset.range; renderSparkline(); });
 
