@@ -488,7 +488,7 @@ const initials = (name) => {
   const n = String(name).trim();
   if (/^[A-Za-z0-9.]{1,5}$/.test(n)) return n.toUpperCase();          // already a ticker: NOW, COIN, BTC
   const m = metaFor(name);
-  if (m.sym) return m.sym.replace(/USDT$|USD$/, "").slice(0, 4);       // pair symbol → strip quote ccy
+  if (m.sym) return m.sym.replace(/USDT$|USD$/, "").slice(0, 4).toUpperCase();   // pair symbol → strip quote ccy
   const words = n.replace(/[^A-Za-z0-9 ]/g, "").split(/\s+/).filter(Boolean);
   if (words.length === 1) return words[0].slice(0, 4).toUpperCase();
   return words.map(w => w[0]).join("").slice(0, 4).toUpperCase();
@@ -716,7 +716,7 @@ async function refreshPrices() {
 function setStatus(dotClass, text) {
   const line = $("#statusLine");
   if (!line) return;
-  line.innerHTML = `<span class="dot ${dotClass}"></span> ${text}`;
+  line.innerHTML = `<span class="dot ${dotClass}"></span><span class="st">${text}</span>`;
 }
 function refreshStatusText() {
   const key = (STATE.settings.finnhubKey || "").trim();
@@ -734,99 +734,73 @@ function render() {
   renderSavings();
   renderWallets();
   renderAllocation(P);
+  renderWatchlist(P);
   renderSparkline();
   renderHoldings(P);
   renderClosed(P);
   renderLog();
+  renderTabCounts(P);
   refreshStatusText();
 }
 
+let LIVE_TOTAL = 0;   // valeur totale du dernier rendu (sert au poids de chaque ligne de la watchlist)
 function renderKPIs(P) {
   const t = P.totals;
   const cashUSD = totalCashUSD();
   const ST = savingsTotals(), WT = walletTotals(), I = interestTotals();
   const savUSD = ST.usd, walUSD = WT.usd;
   const totalValue = t.mv + cashUSD + savUSD + walUSD;
+  LIVE_TOTAL = totalValue;
   const walPnl = WT.hasPnl ? WT.pnl : 0;
   const totalPL = t.upl + t.realizedAll + walPnl;
   const dayPct = (t.mv - t.day) ? t.day / (t.mv - t.day) : 0;
 
-  /* ---- hero: total value + composition bar ---- */
-  const segs = [
-    { nm: "Stocks & ETFs", v: P.byClass.stock.mv, c: "var(--stock)" },
-    { nm: "Crypto", v: P.byClass.crypto.mv, c: "var(--crypto)" },
-    { nm: "Wallets", v: walUSD, c: "var(--wallet)" },
-    { nm: "Savings", v: savUSD, c: "var(--savings)" },
-    { nm: "Cash", v: cashUSD, c: "var(--cash)" },
-  ].filter(x => x.v > 0.5);
-  const segTot = segs.reduce((a, x) => a + x.v, 0) || 1;
+  /* ---- en-tête du graphique : valeur totale, variation du jour, P&L cumulé ---- */
   $("#heroCard").innerHTML = `
-    <div>
-      <div class="label">Total value <span class="pdot live" style="margin-left:2px"></span></div>
-      <div class="val num">${money(totalValue)}</div>
-      <div class="hero-chips">
-        ${t.day ? `<span class="chip ${cls(t.day)}">${t.day > 0 ? "▲" : "▼"} ${money(Math.abs(t.day))} · ${pct(Math.abs(dayPct), false)} today</span>` : ""}
-        <span class="chip ${cls(totalPL)}">${money(totalPL, { sign: true })} all-time</span>
-      </div>
-    </div>
-    <div>
-      <div class="comp-bar">${segs.map(x => `<span style="width:${(x.v / segTot * 100).toFixed(2)}%;background:${x.c}" title="${x.nm}"></span>`).join("")}</div>
-      <div class="comp-legend">${segs.map(x => `<span class="cl"><span class="sw" style="background:${x.c}"></span>${x.nm} <b class="num">${money(x.v)}</b></span>`).join("")}</div>
+    <div class="hv-label">Total value <span class="pdot live"></span></div>
+    <div class="hv-val">${money(totalValue)}</div>
+    <div class="hv-chg num">
+      ${t.day ? `<span class="${cls(t.day)}">${money(t.day, { sign: true })} (${pct(dayPct)})<span class="k">today</span></span>` : `<span class="muted">No live move yet</span>`}
+      <span class="${cls(totalPL)}">${money(totalPL, { sign: true })}<span class="k">all-time P&amp;L</span></span>
     </div>`;
 
-  /* ---- stat tiles ---- */
-  const tiles = [];
-  const tile = (label, valHtml, sub) => tiles.push(`<div class="tile"><div class="label">${label}</div><div class="val num">${valHtml}</div>${sub ? `<div class="sub">${sub}</div>` : ""}</div>`);
-  tile("Today",
+  /* ---- bande d'indicateurs ---- */
+  const cells = [];
+  const kpi = (label, valHtml, sub) => cells.push(`<div class="kpi"><div class="label">${label}</div><div class="val">${valHtml}</div>${sub ? `<div class="sub">${sub}</div>` : ""}</div>`);
+  kpi("Today",
     t.day ? `<span class="${cls(t.day)}">${money(t.day, { sign: true })}</span>` : `<span class="muted">—</span>`,
-    t.day ? `<span class="chip ${cls(t.day)}">${pct(dayPct)}</span> <span class="muted">live-priced assets</span>` : `<span class="muted">no live move yet</span>`);
-  tile("Total P&L", `<span class="${cls(totalPL)}">${money(totalPL, { sign: true })}</span>`,
-    `<span class="muted">U ${money(t.upl, { sign: true })} · R ${money(t.realizedAll, { sign: true })}${walPnl ? ` · W ${money(walPnl, { sign: true })}` : ""}</span>`);
-  tile("Unrealized", `<span class="${cls(t.upl)}">${money(t.upl, { sign: true })}</span>`,
-    `<span class="chip ${cls(t.upl)}">${pct(t.cost ? t.upl / t.cost : 0)}</span> <span class="muted">on ${money(t.cost)} cost</span>`);
-  tile("Realized", `<span class="${cls(t.realizedAll)}">${money(t.realizedAll, { sign: true })}</span>`,
-    `<span class="muted">${P.realized.length} sold position${P.realized.length === 1 ? "" : "s"}</span>`);
-  if (WT.count) tile("Wallet P&L", `<span class="${cls(walPnl)}">${money(walPnl, { sign: true })}</span>`,
-    `<span class="muted">Hyperliquid · live</span>`);
+    t.day ? `<span class="${cls(t.day)}">${pct(dayPct)}</span> · live-priced assets` : "no live move yet");
+  kpi("Total P&amp;L", `<span class="${cls(totalPL)}">${money(totalPL, { sign: true })}</span>`,
+    `U ${money(t.upl, { sign: true })} · R ${money(t.realizedAll, { sign: true })}${walPnl ? ` · W ${money(walPnl, { sign: true })}` : ""}`);
+  kpi("Unrealized", `<span class="${cls(t.upl)}">${money(t.upl, { sign: true })}</span>`,
+    `<span class="${cls(t.upl)}">${pct(t.cost ? t.upl / t.cost : 0)}</span> on ${money(t.cost)} cost`);
+  kpi("Realized", `<span class="${cls(t.realizedAll)}">${money(t.realizedAll, { sign: true })}</span>`,
+    `${P.realized.length} sold position${P.realized.length === 1 ? "" : "s"}`);
+  if (WT.count) kpi("Wallet P&amp;L", `<span class="${cls(walPnl)}">${money(walPnl, { sign: true })}</span>`, "Hyperliquid · live");
   const SY = stakingRows(), sy = SY.reduce((a, r) => a + r.yieldUSD, 0);
-  if (SY.length) tile("Staking yield", `<span class="${cls(sy)}">${money(sy, { sign: true })}</span>`,
-    `<span class="muted">${SY.map(r => `${r.asset} ${((r.ratioNow / r.ratioEntry - 1) * 100).toFixed(2)}%`).join(" · ")}</span>`);
-
-  if (I.received || I.paid) tile("Net interest", `<span class="${cls(I.net)}">${money(I.net, { sign: true })}</span>`,
-    `<span class="muted"><span class="pos">+${money(I.received)}</span> · <span class="neg">−${money(I.paid)}</span></span>`);
-  $("#stats").innerHTML = tiles.join("");
-
-  /* ---- class tiles ---- */
-  const bal = cashBalances();
-  const ccyStr = CCYS.filter(c => Math.abs(bal[c]) > 0.005).map(c => moneyIn(bal[c], c, 0)).join(" · ");
-  const stk = P.byClass.stock, cry = P.byClass.crypto;
-  const nStk = P.open.filter(o => o.cls === "stock").length, nCry = P.open.filter(o => o.cls === "crypto").length;
-  const cts = [];
-  const ct = (color, label, val, sub) => cts.push(`<div class="tile class-tile" style="--cc:${color}"><div class="label"><span class="dot-c"></span>${label}</div><div class="val num">${val}</div><div class="sub">${sub}</div></div>`);
-  ct("var(--stock)", "Stocks & ETFs", money(stk.mv), `<span class="chip ${cls(stk.upl)}">${money(stk.upl, { sign: true })}</span> <span class="muted">${nStk} positions</span>`);
-  ct("var(--crypto)", "Crypto", money(cry.mv), `<span class="chip ${cls(cry.upl)}">${money(cry.upl, { sign: true })}</span> <span class="muted">${nCry} positions</span>`);
-  if (WT.count) ct("var(--wallet)", "Wallets", money(walUSD),
-    WT.hasPnl ? `<span class="chip ${cls(WT.pnl)}">${money(WT.pnl, { sign: true })}</span> <span class="muted">live</span>` : `<span class="muted">${WT.count} wallet${WT.count === 1 ? "" : "s"}</span>`);
-  if ((STATE.savings || []).length) ct("var(--savings)", "Savings", money(savUSD),
-    `<span class="muted">${STATE.savings.length} accounts · <span class="pos">+${money(ST.interest)}</span> interest</span>`);
-  ct("var(--cash)", "Cash", money(cashUSD), `<span class="muted">${ccyStr || "—"}</span>`);
-  $("#classCards").innerHTML = cts.join("");
+  if (SY.length) kpi("Staking yield", `<span class="${cls(sy)}">${money(sy, { sign: true })}</span>`,
+    SY.map(r => `${r.asset} ${((r.ratioNow / r.ratioEntry - 1) * 100).toFixed(2)}%`).join(" · "));
+  if (I.received || I.paid) kpi("Net interest", `<span class="${cls(I.net)}">${money(I.net, { sign: true })}</span>`,
+    `<span class="pos">+${money(I.received)}</span> · <span class="neg">−${money(I.paid)}</span>`);
+  const box = $("#stats");
+  box.style.setProperty("--n", cells.length);
+  box.innerHTML = cells.join("");
 
   /* ---- today's movers ---- */
   // positions détenues uniquement (les mouvements < 0,50 $ sont ignorés), classées par variation du jour :
-  // les 3 meilleures puis les 3 pires, sans doublon quand il y a moins de 6 lignes
+  // les 3 meilleures puis les 3 pires, sans doublon quand il y a moins de 6 lignes ; deux colonnes alignées
   const mv = P.open.filter(o => o.status === "live" && o.changePct != null && o.qty > EPS && Math.abs(o.day) >= 0.5)
     .sort((a, b) => b.changePct - a.changePct);
   const ups = mv.slice(0, 3);
   const dns = mv.slice(Math.max(ups.length, mv.length - 3)).reverse();
-  const box = $("#movers");
-  if (!mv.length) { box.innerHTML = ""; }
-  else {
-    const chipHtml = o => `<span class="mover ${cls(o.day)}"><b>${initials(o.asset)}</b> ${pct(o.changePct / 100)} <span class="muted num">${money(o.day, { sign: true })}</span></span>`;
-    box.innerHTML = `<div class="panel movers"><span class="label">Today's movers</span>`
-      + `<span class="label sub">Top 3</span><span class="mover-chips">${ups.map(chipHtml).join("")}</span>`
-      + (dns.length ? `<span class="label sub">Bottom 3</span><span class="mover-chips">${dns.map(chipHtml).join("")}</span>` : "") + `</div>`;
-  }
+  const mbox = $("#movers");
+  if (!mv.length) { mbox.innerHTML = ""; return; }
+  const row = o => `<div class="mv-row"><span class="tk" title="${o.asset}">${initials(o.asset)}</span>`
+    + `<span class="pc num ${cls(o.day)}">${pct(o.changePct / 100)}</span><span class="am num">${money(o.day, { sign: true })}</span></div>`;
+  mbox.innerHTML = `<section class="panel movers"><div class="panel-head"><h2>Today's movers</h2></div><div class="mv-cols">`
+    + `<div class="mv-col"><div class="mv-h">Top 3</div>${ups.map(row).join("")}</div>`
+    + (dns.length ? `<div class="mv-col"><div class="mv-h">Bottom 3</div>${dns.map(row).join("")}</div>` : "")
+    + `</div></section>`;
 }
 
 /* ============================ Wallets panel ============================ */
@@ -1104,64 +1078,76 @@ function renderCash(P) {
 
 function renderAllocation(P) {
   const stk = P.byClass.stock.mv, cry = P.byClass.crypto.mv, cash = Math.max(totalCashUSD(), 0);
-  const sav = Math.max(savingsTotals().usd, 0);
-  const wal = Math.max(walletTotals().usd, 0);
+  const ST = savingsTotals(), WT = walletTotals();
+  const sav = Math.max(ST.usd, 0), wal = Math.max(WT.usd, 0);
   const tot = stk + cry + cash + sav + wal;
-  const donut = $("#donut");
-  if (!tot) { donut.innerHTML = `<div class="empty">Nothing to show yet — add a trade or some cash.</div>`; return; }
+  const box = $("#donut"), note = $("#allocBars");
+  if (!tot) { box.innerHTML = `<div class="empty">Nothing to show yet — add a trade or some cash.</div>`; note.innerHTML = ""; return; }
 
-  const r = 52, C = 2 * Math.PI * r, sw = 18;
+  // barre de composition + une ligne par classe d'actifs (poids, valeur, P&L latent)
+  const nStk = P.open.filter(o => o.cls === "stock").length, nCry = P.open.filter(o => o.cls === "crypto").length;
+  const bal = cashBalances();
+  const ccyStr = CCYS.filter(c => Math.abs(bal[c]) > 0.005).map(c => moneyIn(bal[c], c, 0)).join(" · ");
+  const pl = v => `<span class="${cls(v)}">${money(v, { sign: true })}</span>`;
+  const nSav = (STATE.savings || []).length;
   const segs = [
-    { nm: "Stocks & ETFs", v: stk, color: "var(--stock)" },
-    { nm: "Crypto", v: cry, color: "var(--crypto)" },
-    { nm: "Cash", v: cash, color: "var(--cash)" },
-    { nm: "Savings", v: sav, color: "var(--savings)" },
-    { nm: "Wallets", v: wal, color: "var(--wallet)" },
-  ].filter(s => s.v > 0);
-  let off = 0;
-  const circles = segs.map(s => {
-    const frac = s.v / tot, len = frac * C;
-    const c = `<circle cx="70" cy="70" r="${r}" fill="none" stroke="${s.color}" stroke-width="${sw}"
-      stroke-dasharray="${len} ${C - len}" stroke-dashoffset="${-off}" stroke-linecap="butt"
-      transform="rotate(-90 70 70)"></circle>`;
-    off += len; return c;
-  }).join("");
+    { nm: "Stocks & ETFs", v: stk, color: "var(--stock)", sub: `${nStk} position${nStk === 1 ? "" : "s"} · ${pl(P.byClass.stock.upl)}` },
+    { nm: "Crypto", v: cry, color: "var(--crypto)", sub: `${nCry} position${nCry === 1 ? "" : "s"} · ${pl(P.byClass.crypto.upl)}` },
+    { nm: "Savings", v: sav, color: "var(--savings)", sub: `${nSav} account${nSav === 1 ? "" : "s"} · <span class="pos">+${money(ST.interest)}</span> interest` },
+    { nm: "Wallets", v: wal, color: "var(--wallet)", sub: WT.hasPnl ? `${WT.count} wallet${WT.count === 1 ? "" : "s"} · ${pl(WT.pnl)}` : `${WT.count} wallet${WT.count === 1 ? "" : "s"}` },
+    { nm: "Cash", v: cash, color: "var(--cash)", sub: ccyStr || "—" },
+  ].filter(s => s.v > 0.5);
+  const w = v => (v / tot * 100).toFixed(1) + "%";
+  box.innerHTML = `
+    <div class="comp-bar">${segs.map(s => `<span style="width:${(s.v / tot * 100).toFixed(2)}%;background:${s.color}" title="${s.nm} ${w(s.v)}"></span>`).join("")}</div>
+    ${segs.map(s => `<div class="al-row"><span class="sw" style="background:${s.color}"></span>
+      <span class="nm"><b>${s.nm}</b><small>${s.sub}</small></span>
+      <span class="pc num">${w(s.v)}</span><span class="amt num">${money(s.v)}</span></div>`).join("")}
+    <div class="al-row al-tot"><span></span><span class="nm"><b>Total</b></span><span></span><span class="amt num">${money(tot)}</span></div>`;
 
-  const legend = segs.map(s => `
-    <div class="row">
-      <span class="sw" style="background:${s.color}"></span>
-      <span class="nm">${s.nm}</span>
-      <span class="pc">${(s.v / tot * 100).toFixed(1)}%</span>
-      <span class="amt">${money(s.v)}</span>
-    </div>`).join("");
-
-  donut.innerHTML = `
-    <div class="donut-wrap">
-      <div class="donut" style="width:140px;height:140px">
-        <svg width="140" height="140" viewBox="0 0 140 140">
-          <circle cx="70" cy="70" r="${r}" fill="none" stroke="var(--surface-2)" stroke-width="${sw}"></circle>
-          ${circles}
-        </svg>
-        <div class="center"><div><div class="big">${money(tot)}</div><div class="small">Total</div></div></div>
-      </div>
-      <div class="legend">${legend}</div>
-    </div>`;
-
-  // allocation bars (top positions + cash)
-  const bars = $("#allocBars");
-  const items = [...P.open].sort((a, b) => b.mv - a.mv).slice(0, 8)
-    .map(o => ({ nm: o.asset, v: o.mv, color: o.cls === "crypto" ? "var(--crypto)" : "var(--stock)" }));
-  if (cash > 0) items.push({ nm: "Cash", v: cash, color: "var(--cash)" });
-  if (sav > 0) items.push({ nm: "Savings", v: sav, color: "var(--savings)" });
-  if (wal > 0) items.push({ nm: "Wallets", v: wal, color: "var(--wallet)" });
-  items.sort((a, b) => b.v - a.v);
-  bars.innerHTML = items.map(o => `<div class="alloc-bar">
-      <div class="top"><span>${o.nm}</span><span class="muted">${money(o.v)} · ${(o.v / tot * 100).toFixed(1)}%</span></div>
-      <div class="track"><div class="fill" style="width:${(o.v / tot * 100).toFixed(1)}%;background:${o.color}"></div></div>
-    </div>`).join("");
   const top = [...P.open].sort((a, b) => b.mv - a.mv)[0];
-  if (top && tot && top.mv / tot > 0.35)
-    bars.insertAdjacentHTML("beforeend", `<div class="conc-note">⚠︎ ${top.asset} is ${(top.mv / tot * 100).toFixed(0)}% of your wealth — concentrated.</div>`);
+  note.innerHTML = (top && top.mv / tot > 0.35)
+    ? `<div class="conc-note">⚠︎ ${top.asset} is ${(top.mv / tot * 100).toFixed(0)}% of your wealth — concentrated.</div>` : "";
+}
+
+/* ============================ Watchlist (colonne latérale) ============================ */
+// toutes les positions ouvertes, triées par valeur : dernier cours, valeur, poids dans le patrimoine, variation du jour
+function renderWatchlist(P) {
+  const box = $("#watchPanel"); if (!box) return;
+  const rows = [...P.open].sort((a, b) => b.mv - a.mv);
+  if (!rows.length) { box.innerHTML = `<div class="panel-head"><h2>Watchlist</h2></div><div class="empty">No open positions yet.</div>`; return; }
+  const tot = LIVE_TOTAL > 0 ? LIVE_TOTAL : P.totals.mv;
+  box.innerHTML = `<div class="panel-head"><h2>Watchlist <span class="tag">${rows.length}</span></h2><span class="muted num">${money(P.totals.mv)}</span></div>
+    <div class="wl-cols"><span>Symbol</span><span>Value</span><span>Day</span></div>
+    ${rows.map(o => {
+      const live = o.status === "live" && o.changePct != null;
+      return `<div class="wl-row">
+        <div class="wl-sym"><div class="asset-badge ${o.cls === "crypto" ? "crypto" : "stock"}">${initials(o.asset)}</div>
+          <div class="wl-txt"><span class="wl-nm" title="${o.asset}">${o.asset}</span>
+            <span class="wl-sub num"><span class="pdot ${o.status === "live" ? "live" : "manual"}"></span>${fmtPrice(o.price)}</span></div></div>
+        <div class="wl-val num"><b>${money(o.mv)}</b><span>${tot ? (o.mv / tot * 100).toFixed(1) + "%" : ""}</span></div>
+        <div class="wl-day num ${live ? cls(o.changePct) : "muted"}">${live ? pct(o.changePct / 100) : "—"}</div>
+      </div>`;
+    }).join("")}`;
+}
+
+/* ============================ Onglets ============================ */
+const TABS = ["positions", "realized", "trades", "cash", "savings", "wallets"];
+function setTab(name) {
+  if (!TABS.includes(name)) name = "positions";
+  VIEW.tab = name;
+  try { localStorage.setItem("wealth_tab", name); } catch (e) {}
+  $$(".tab-bar [data-tab]").forEach(b => { const on = b.dataset.tab === name; b.classList.toggle("active", on); b.setAttribute("aria-selected", on); });
+  $$(".tab-pane").forEach(p => p.classList.toggle("active", p.dataset.pane === name));
+}
+function renderTabCounts(P) {
+  const n = {
+    positions: P.open.length, realized: P.realized.length, trades: STATE.trades.length,
+    cash: money(totalCashUSD()),
+    savings: (STATE.savings || []).length ? money(savingsTotals().usd) : "",
+    wallets: (STATE.wallets || []).length ? money(walletTotals().usd) : "",
+  };
+  $$(".tab-n").forEach(s => { s.textContent = n[s.dataset.n] ?? ""; });
 }
 
 /* Record today's true net worth (assets + cash + savings + wallets) once per day.
@@ -1191,98 +1177,140 @@ function flushSnapshot() {
   if (SNAP_DIRTY && REMOTE_STATE === "synced" && typeof ghAutoBackup === "function") { SNAP_DIRTY = false; ghAutoBackup(); }
 }
 
+/* ============================ Courbe de valeur (style TradingView) ============================
+   Dessinée à la taille réelle du conteneur (texte net, pas d'étirement) : échelle de prix à droite,
+   dates en bas, étiquette du dernier point, réticule qui suit la courbe à la souris comme au doigt. */
+const RANGES = { "1M": 31, "3M": 92, "6M": 183, "YTD": 0, "1Y": 366, "ALL": 0 };
+let CHART_W = 0;
 function renderSparkline() {
-  const wrap = $("#sparkPanel");
+  const host = $("#sparkSvg"), meta = $("#sparkMeta");
+  if (!host || !meta) return;
   const all = [...(STATE.snapshots || [])].filter(x => x.navUSD != null).sort((a, b) => a.date < b.date ? -1 : 1);
-  if (all.length < 2) { wrap.classList.add("hidden"); return; }
-  wrap.classList.remove("hidden");
+  if (all.length < 2) { meta.innerHTML = ""; host.innerHTML = `<div class="empty">The net-worth curve starts after two daily snapshots.</div>`; return; }
   const DAY = 864e5, ts = x => new Date(x.date + "T00:00:00Z").getTime();
   const nowT = ts(all.at(-1)), t0 = ts(all[0]);
-  const spans = { "3M": 91 * DAY, "1Y": 365 * DAY, "ALL": Infinity };
-  let range = VIEW.sparkRange || "1Y";
-  let startT = range === "ALL" ? t0 : Math.max(t0, nowT - spans[range]);
-  let pts = all.filter(x => ts(x) >= startT).map(x => ({ t: ts(x), v: x.navUSD, real: true }));
-  if (pts.length && t0 < startT) {                      // point interpolé au bord de la fenêtre
+  let range = VIEW.sparkRange in RANGES ? VIEW.sparkRange : "1Y";
+  const startOf = r => r === "ALL" ? t0 : r === "YTD" ? Date.UTC(new Date(nowT).getUTCFullYear(), 0, 1) : nowT - RANGES[r] * DAY;
+  const startT = Math.max(t0, startOf(range));
+  let pts = all.filter(x => ts(x) >= startT).map(x => ({ t: ts(x), v: x.navUSD }));
+  if (pts.length && pts[0].t > startT) {                // point interpolé au bord de la fenêtre
     const i = all.findIndex(x => ts(x) >= startT);
     if (i > 0) { const a = all[i - 1], b = all[i], f = (startT - ts(a)) / (ts(b) - ts(a) || 1);
-      pts.unshift({ t: startT, v: a.navUSD + (b.navUSD - a.navUSD) * f, real: false }); }
+      pts.unshift({ t: startT, v: a.navUSD + (b.navUSD - a.navUSD) * f }); }
   }
-  if (pts.length < 2) { range = "ALL"; VIEW.sparkRange = "ALL"; startT = t0; pts = all.map(x => ({ t: ts(x), v: x.navUSD, real: true })); }
+  if (pts.length < 2 || pts.at(-1).t - pts[0].t < DAY) { range = "ALL"; VIEW.sparkRange = "ALL"; pts = all.map(x => ({ t: ts(x), v: x.navUSD })); }
 
-  const vals = pts.map(p => p.v), min = Math.min(...vals), max = Math.max(...vals), pad = (max - min) * 0.14 || 1;
-  const W = 680, H = 190, lo = min - pad, hi = max + pad;
+  const W = Math.max(280, Math.round(host.clientWidth || 640)); CHART_W = W;
+  const H = W < 600 ? 230 : W < 1000 ? 300 : 380;
+  const AX = 70, TOP = 14, BOT = 26, pw = W - AX, ph = H - TOP - BOT;
   const span = (pts.at(-1).t - pts[0].t) || 1;
-  const X = t => ((t - pts[0].t) / span) * W, Y = v => H - ((v - lo) / (hi - lo)) * H;
-  const P2 = pts.map(p => [X(p.t), Y(p.v)]);
-  // Interpolation cubique monotone (Fritsch-Carlson) : lissée mais sans dépassement entre deux points,
-  // contrairement à Catmull-Rom qui dessinait des bosses fantômes quand les points sont espacés.
-  const n = P2.length, xs = P2.map(p => p[0]), ys = P2.map(p => p[1]);
+  const vals = pts.map(p => toCcy(p.v));                // échelle dans la devise affichée
+  let lo = Math.min(...vals), hi = Math.max(...vals);
+  const padV = (hi - lo) * 0.1 || Math.abs(hi) * 0.02 || 1; lo -= padV; hi += padV;
+  const nice = raw => { const mag = Math.pow(10, Math.floor(Math.log10(raw))), f = raw / mag; return (f <= 1 ? 1 : f <= 2 ? 2 : f <= 2.5 ? 2.5 : f <= 5 ? 5 : 10) * mag; };
+  const step = nice((hi - lo) / Math.max(3, Math.min(8, Math.floor(ph / 52))));
+  const yTicks = []; for (let v = Math.ceil(lo / step) * step; v <= hi; v += step) yTicks.push(v);
+  const X = t => (t - pts[0].t) / span * pw, Y = v => TOP + ph - (v - lo) / (hi - lo) * ph;
+  const fmtAx = v => (v < 0 ? "-" : "") + SYM() + (Math.abs(v) >= 1e6 ? (Math.abs(v) / 1e6).toFixed(2) + "M" : Math.round(Math.abs(v)).toLocaleString("en-US"));
+  const MON = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];   // « Sep », pas « Sept »
+  const fmtDM = t => { const d = new Date(t); return `${d.getUTCDate()} ${MON[d.getUTCMonth()]}`; };
+  const fmtD = t => `${fmtDM(t)} ${new Date(t).getUTCFullYear()}`;
+  const f1 = v => v.toFixed(1);
+
+  // Interpolation cubique monotone (Fritsch-Carlson) : lissée mais sans dépassement entre deux points.
+  const xs = pts.map(p => X(p.t)), ys = vals.map(Y), n = xs.length;
   const dx = [], sl = [];
   for (let i = 0; i < n - 1; i++) { dx.push(xs[i + 1] - xs[i] || 1e-6); sl.push((ys[i + 1] - ys[i]) / dx[i]); }
   const m = new Array(n).fill(0);
-  if (n > 1) { m[0] = sl[0]; m[n - 1] = sl[n - 2]; }
+  m[0] = sl[0]; m[n - 1] = sl[n - 2];
   for (let i = 1; i < n - 1; i++) {
     if (sl[i - 1] * sl[i] <= 0) m[i] = 0;
     else { const w1 = 2 * dx[i] + dx[i - 1], w2 = dx[i] + 2 * dx[i - 1]; m[i] = (w1 + w2) / (w1 / sl[i - 1] + w2 / sl[i]); }
   }
-  let d = `M${xs[0].toFixed(1)},${ys[0].toFixed(1)}`;
+  let d = `M${f1(xs[0])},${f1(ys[0])}`;
   for (let i = 0; i < n - 1; i++) {
     const h = dx[i];
-    d += `C${(xs[i] + h / 3).toFixed(1)},${(ys[i] + m[i] * h / 3).toFixed(1)} ${(xs[i + 1] - h / 3).toFixed(1)},${(ys[i + 1] - m[i + 1] * h / 3).toFixed(1)} ${xs[i + 1].toFixed(1)},${ys[i + 1].toFixed(1)}`;
+    d += `C${f1(xs[i] + h / 3)},${f1(ys[i] + m[i] * h / 3)} ${f1(xs[i + 1] - h / 3)},${f1(ys[i + 1] - m[i + 1] * h / 3)} ${f1(xs[i + 1])},${f1(ys[i + 1])}`;
   }
-  const first = pts[0].v, last = pts.at(-1).v, delta = last - first, up = delta >= 0;
-  const col = up ? "var(--pos)" : "var(--neg)";
-  const grid = [0.25, 0.5, 0.75].map(f => `<line x1="0" x2="${W}" y1="${(H * f).toFixed(1)}" y2="${(H * f).toFixed(1)}" stroke="#2a2e39" stroke-width="1" vector-effect="non-scaling-stroke"></line>`).join("");
-  const segBtns = ["3M", "1Y", "ALL"].map(r => `<button data-range="${r}" class="${r === range ? "active" : ""}">${r === "ALL" ? "All" : r}</button>`).join("");
-  const fmtD = t => new Date(t).toISOString().slice(0, 10);
-  // axe des dates : 5 graduations régulières, libellés en HTML (le SVG est étiré, du texte y serait déformé)
-  const longSpan = span > 300 * DAY;
-  const fmtTick = t => new Date(t).toLocaleDateString("en-GB", longSpan
-    ? { month: "short", year: "2-digit", timeZone: "UTC" } : { day: "numeric", month: "short", timeZone: "UTC" });
-  const ticks = [0, 0.25, 0.5, 0.75, 1].map(f => ({ f, t: pts[0].t + f * span }));
-  const tickLines = ticks.slice(1, -1).map(k => `<line x1="${(k.f * W).toFixed(1)}" x2="${(k.f * W).toFixed(1)}" y1="0" y2="${H}" stroke="#2a2e39" stroke-width="1" vector-effect="non-scaling-stroke"></line>`).join("");
-  const axis = `<div class="spark-axis">${ticks.map(k =>
-    `<span style="left:${(k.f * 100).toFixed(2)}%;transform:translateX(${k.f === 0 ? "0" : k.f === 1 ? "-100%" : "-50%"})">${fmtTick(k.t)}</span>`).join("")}</div>`;
-
-  $("#sparkMeta").innerHTML = `
-    <div><div class="label muted" style="font-size:.72rem;text-transform:uppercase;letter-spacing:.07em;font-weight:650">Net worth <span class="pdot live" style="margin-left:2px"></span></div>
-      <div class="num" style="font-size:1.55rem;font-weight:750;letter-spacing:-.02em">${money(last)}</div>
-      <div style="margin-top:2px"><span class="chip ${up ? "pos" : "neg"}">${up ? "▲" : "▼"} ${money(Math.abs(delta))} · ${pct(Math.abs(first ? delta / first : 0), false)}</span></div></div>
-    <div style="text-align:right;display:flex;flex-direction:column;align-items:flex-end;gap:7px">
-      <div class="seg seg-mini" id="sparkRange">${segBtns}</div>
-      <div class="muted" style="font-size:.7rem">${fmtD(pts[0].t)} → ${all.at(-1).date} · ${pts.filter(p => p.real).length} points</div></div>`;
-  $("#sparkSvg").innerHTML = `
-    <svg id="sparkSvgEl" width="100%" height="${H}" viewBox="0 0 ${W} ${H}" preserveAspectRatio="none">
-      <defs><linearGradient id="sg" x1="0" x2="0" y1="0" y2="1">
-        <stop offset="0" stop-color="${col}" stop-opacity="0.28"/>
-        <stop offset="1" stop-color="${col}" stop-opacity="0"/>
-      </linearGradient></defs>
-      ${grid}${tickLines}
-      <path d="${d} L${W},${H} L0,${H} Z" fill="url(#sg)"></path>
-      <path d="${d}" fill="none" stroke="${col}" stroke-width="2" stroke-linejoin="round" stroke-linecap="round" vector-effect="non-scaling-stroke"></path>
-      <line id="sparkX" y1="0" y2="${H}" stroke="#9598a1" stroke-dasharray="4 4" vector-effect="non-scaling-stroke" visibility="hidden"></line>
-    </svg>
-    ${axis}
-    <div id="sparkTip" class="spark-tip hidden"></div>`;
-  $$("#sparkRange button").forEach(b => b.onclick = () => { VIEW.sparkRange = b.dataset.range; renderSparkline(); });
-
-  /* crosshair au survol : interpole la valeur à la date pointée */
-  const svg = $("#sparkSvgEl"), tip = $("#sparkTip"), xline = $("#sparkX");
-  svg.onmousemove = e => {
-    const r = svg.getBoundingClientRect();
-    const fx = Math.min(1, Math.max(0, (e.clientX - r.left) / r.width));
-    const t = pts[0].t + fx * span;
-    let i = pts.findIndex(p => p.t >= t); if (i <= 0) i = 1;
-    const a = pts[i - 1], b = pts[i] || a;
-    const v = a.v + (b.v - a.v) * ((t - a.t) / ((b.t - a.t) || 1));
-    xline.setAttribute("x1", (fx * W).toFixed(1)); xline.setAttribute("x2", (fx * W).toFixed(1));
-    xline.setAttribute("visibility", "visible");
-    tip.classList.remove("hidden");
-    tip.innerHTML = `<b class="num">${money(v)}</b><span>${fmtD(t)}</span>`;
-    const left = Math.min(r.width - 130, Math.max(0, e.clientX - r.left + 12));
-    tip.style.left = left + "px";
+  // même courbe que le tracé (Hermite sur le segment, paramétré linéairement en x) : le point du réticule reste collé à la ligne
+  const yAt = px => {
+    let i = 0; while (i < n - 2 && xs[i + 1] < px) i++;
+    const h = dx[i], s = Math.min(1, Math.max(0, (px - xs[i]) / h)), s2 = s * s, s3 = s2 * s;
+    return (2 * s3 - 3 * s2 + 1) * ys[i] + (s3 - 2 * s2 + s) * h * m[i] + (3 * s2 - 2 * s3) * ys[i + 1] + (s3 - s2) * h * m[i + 1];
   };
-  svg.onmouseleave = () => { tip.classList.add("hidden"); xline.setAttribute("visibility", "hidden"); };
+
+  // graduations de dates : jours sur une fenêtre courte, sinon débuts de mois (l'année à la place de « Jan »)
+  const xTicks = [], maxX = Math.max(2, Math.floor(pw / 64)), endT = pts.at(-1).t;
+  if (span <= 70 * DAY) {
+    const sd = [1, 2, 3, 7, 14].find(s => span / (s * DAY) <= maxX) || 30;
+    for (let t = Math.ceil(pts[0].t / DAY) * DAY; t <= endT; t += sd * DAY)
+      xTicks.push({ t, lbl: fmtDM(t) });
+  } else {
+    const sm = [1, 2, 3, 6, 12].find(s => span / (30.44 * DAY) / s <= maxX + 0.3) || 24;   // +0,3 : une fenêtre « 1Y » fait 366 jours
+    const d0 = new Date(pts[0].t); let y = d0.getUTCFullYear(), mo = d0.getUTCMonth() + 1;
+    for (;;) { if (mo > 11) { mo -= 12; y++; } if (mo % sm === 0) break; mo++; }
+    for (;;) {
+      const t = Date.UTC(y, mo, 1); if (t > endT) break;
+      xTicks.push({ t, lbl: mo === 0 ? String(y) : MON[mo] });
+      mo += sm; while (mo > 11) { mo -= 12; y++; }
+    }
+  }
+
+  const gridY = yTicks.map(v => `<line class="ch-grid" x1="0" x2="${pw}" y1="${f1(Y(v))}" y2="${f1(Y(v))}"/>`).join("");
+  const gridX = xTicks.map(k => `<line class="ch-grid" x1="${f1(X(k.t))}" x2="${f1(X(k.t))}" y1="${TOP}" y2="${TOP + ph}"/>`).join("");
+  const yLbl = yTicks.map(v => `<text class="ch-axis" x="${pw + 8}" y="${f1(Y(v) + 4)}">${fmtAx(v)}</text>`).join("");
+  const xLbl = xTicks.filter(k => X(k.t) > 20 && X(k.t) < pw - 20)
+    .map(k => `<text class="ch-axis" x="${f1(X(k.t))}" y="${H - 8}" text-anchor="middle">${k.lbl}</text>`).join("");
+  const lastV = vals.at(-1), ly = Y(lastV);
+  host.innerHTML = `
+    <svg viewBox="0 0 ${W} ${H}" width="${W}" height="${H}">
+      <defs><linearGradient id="chGrad" x1="0" x2="0" y1="0" y2="1"><stop offset="0" class="ch-stop-0"/><stop offset="1" class="ch-stop-1"/></linearGradient></defs>
+      ${gridY}${gridX}
+      <line class="ch-frame" x1="${pw + 0.5}" x2="${pw + 0.5}" y1="0" y2="${H}"/>
+      <line class="ch-frame" x1="0" x2="${W}" y1="${TOP + ph + 0.5}" y2="${TOP + ph + 0.5}"/>
+      <path d="${d} L${f1(xs[n - 1])},${TOP + ph} L${f1(xs[0])},${TOP + ph} Z" fill="url(#chGrad)"/>
+      <path class="ch-line" d="${d}"/>
+      <line class="ch-last" x1="0" x2="${pw}" y1="${f1(ly)}" y2="${f1(ly)}"/>
+      ${yLbl}${xLbl}
+      <g class="ch-tag"><rect x="${pw + 1}" y="${f1(ly - 10)}" width="${AX - 2}" height="20" rx="2"/><text x="${pw + 8}" y="${f1(ly + 4)}">${fmtAx(lastV)}</text></g>
+      <g id="chCross" visibility="hidden">
+        <line class="ch-cross" id="chCx" y1="${TOP}" y2="${TOP + ph}"/>
+        <line class="ch-cross" id="chCy" x1="0" x2="${pw}"/>
+        <circle class="ch-dot" id="chDot" r="4"/>
+        <g class="ch-ytag"><rect id="chYr" x="${pw + 1}" width="${AX - 2}" height="20" rx="2"/><text id="chYt" x="${pw + 8}"></text></g>
+        <g class="ch-xtag"><rect id="chXr" y="${TOP + ph + 3}" width="96" height="20" rx="2"/><text id="chXt" y="${TOP + ph + 17}" text-anchor="middle"></text></g>
+      </g>
+    </svg>`;
+
+  /* réticule : souris au survol ; au doigt, glisser horizontalement (le défilement vertical reste libre) */
+  const svg = host.firstElementChild, cross = svg.querySelector("#chCross");
+  const set = (id, attrs, text) => { const el2 = svg.querySelector(id); for (const k in attrs) el2.setAttribute(k, attrs[k]); if (text != null) el2.textContent = text; };
+  const move = e => {
+    const r = svg.getBoundingClientRect();
+    const px = Math.min(pw, Math.max(0, (e.clientX - r.left) * W / r.width));
+    const py = yAt(px), v = lo + (TOP + ph - py) / ph * (hi - lo), cx = Math.min(pw - 48, Math.max(48, px));
+    set("#chCx", { x1: f1(px), x2: f1(px) }); set("#chCy", { y1: f1(py), y2: f1(py) }); set("#chDot", { cx: f1(px), cy: f1(py) });
+    set("#chYr", { y: f1(py - 10) }); set("#chYt", { y: f1(py + 4) }, fmtAx(v));
+    set("#chXr", { x: f1(cx - 48) }); set("#chXt", { x: f1(cx) }, fmtD(pts[0].t + px / pw * span));
+    cross.setAttribute("visibility", "visible");
+  };
+  const hide = () => cross.setAttribute("visibility", "hidden");
+  svg.addEventListener("pointermove", move);
+  svg.addEventListener("pointerdown", move);
+  svg.addEventListener("pointerleave", e => { if (e.pointerType === "mouse") hide(); });   // au doigt, la valeur reste affichée
+  svg.addEventListener("pointercancel", hide);                                              // défilement vertical de la page
+
+  const firstUSD = pts[0].v, delta = pts.at(-1).v - firstUSD;
+  const since = range === "ALL" ? `since ${fmtD(pts[0].t)}` : range === "YTD" ? "year to date" : `past ${range}`;
+  meta.innerHTML = `<div class="seg seg-mini" id="sparkRange">${Object.keys(RANGES).map(r => `<button data-range="${r}" class="${r === range ? "active" : ""}">${r === "ALL" ? "All" : r}</button>`).join("")}</div>
+    <div class="range-chg num"><span class="${cls(delta)}">${money(delta, { sign: true })} (${pct(firstUSD ? delta / firstUSD : 0)})</span> <span class="muted">${since}</span></div>`;
+  $$("#sparkRange button").forEach(b => b.onclick = () => { VIEW.sparkRange = b.dataset.range; renderSparkline(); });
+}
+function watchChartSize() {   // redessine la courbe quand la largeur de son conteneur change (rotation, fenêtre)
+  const host = $("#sparkSvg"); if (!host) return;
+  const redraw = () => { const w = Math.round(host.clientWidth); if (STATE && w && Math.abs(w - CHART_W) > 2) renderSparkline(); };
+  if (window.ResizeObserver) new ResizeObserver(redraw).observe(host);
+  else window.addEventListener("resize", redraw);
 }
 
 function sortRows(rows, sort) {
@@ -1311,10 +1339,12 @@ function assetCell(o, tag) {
 
 function renderHoldings(P) {
   const cont = $("#holdings");
+  if (!P.open.length) { cont.innerHTML = `<div class="empty"><div class="big">📊</div>No open positions yet — add a trade to get started.</div>`; return; }
+  // un seul tableau : un groupe par classe d'actifs (en-tête + sous-total), total général en pied
   const groups = [
-    { title: "Stocks & ETFs", tag: "stock", rows: P.open.filter(o => o.cls === "stock") },
-    { title: "Crypto", tag: "crypto", rows: P.open.filter(o => o.cls === "crypto") },
-  ];
+    { title: "Stocks & ETFs", color: "var(--stock)", rows: P.open.filter(o => o.cls === "stock") },
+    { title: "Crypto", color: "var(--crypto)", rows: P.open.filter(o => o.cls === "crypto") },
+  ].filter(g => g.rows.length);
   const cols = [
     { key: "asset", label: "Asset" },
     { key: "qty", label: "Qty" },
@@ -1325,41 +1355,38 @@ function renderHoldings(P) {
     { key: "upl", label: "Unreal. P&L" },
     { key: "ret", label: "Return" },
   ];
-  cont.innerHTML = "";
-  for (const g of groups) {
-    if (!g.rows.length) continue;
-    const sub = g.rows.reduce((s, o) => ({ mv: s.mv + o.mv, cost: s.cost + o.cost, upl: s.upl + o.upl, day: s.day + (o.day || 0) }), { mv: 0, cost: 0, upl: 0, day: 0 });
-    const rows = sortRows(g.rows, VIEW.holdSort).map(o => {
-      const pdot = o.status === "live" ? "live" : "manual";
-      const mult = multFor(o.asset);
-      const multTag = (mult !== 1 && o.status === "live" && metaFor(o.asset).src !== "manual") ? ` <span class="muted" style="font-size:.7rem" title="${metaFor(o.asset).sym} × ${mult}">×${mult}</span>` : "";
-      return `<tr>
-        <td>${assetCell(o)}</td>
-        <td class="num">${fmtQty(o.qty)}</td>
-        <td class="num muted">${fmtPrice(o.avg)}</td>
-        <td class="num"><span class="price-tag"><span class="pdot ${pdot}"></span>${fmtPrice(o.price)}${multTag}</span></td>
-        <td class="num">${(o.status === "live" && o.changePct != null && o.day) ? `<span class="${cls(o.day)}">${money(o.day, { sign: true })}</span> <span class="muted" style="font-size:.72rem">${pct(o.changePct / 100)}</span>` : `<span class="muted">—</span>`}</td>
-        <td class="num">${money(o.mv)}</td>
-        <td class="num ${cls(o.upl)}">${money(o.upl, { sign: true })}</td>
-        <td class="num ${cls(o.ret)}">${pct(o.ret)}</td>
-      </tr>`;
-    }).join("");
-    const panel = el("div", "panel");
-    panel.innerHTML = `
-      <div class="panel-head"><h2>${g.title} <span class="tag">${g.rows.length}</span></h2>
-        <div class="muted num">${money(sub.mv)} · <span class="${cls(sub.upl)}">${money(sub.upl, { sign: true })}</span></div></div>
-      <div class="table-scroll"><table class="tbl">
-        <thead><tr>${sortableHead(cols, VIEW.holdSort, "hold")}</tr></thead>
-        <tbody>${rows}</tbody>
-        <tfoot><tr><td>Subtotal</td><td></td><td></td><td></td>
-          <td class="num ${cls(sub.day)}">${sub.day ? money(sub.day, { sign: true }) : ""}</td>
-          <td class="num">${money(sub.mv)}</td>
-          <td class="num ${cls(sub.upl)}">${money(sub.upl, { sign: true })}</td>
-          <td class="num ${cls(sub.cost ? sub.upl / sub.cost : 0)}">${pct(sub.cost ? sub.upl / sub.cost : 0)}</td></tr></tfoot>
-      </table></div>`;
-    cont.appendChild(panel);
-  }
-  if (!P.open.length) cont.innerHTML = `<div class="panel"><div class="empty"><div class="big">📊</div>No open positions yet — add a trade to get started.</div></div>`;
+  const sum = rows => rows.reduce((s, o) => ({ mv: s.mv + o.mv, cost: s.cost + o.cost, upl: s.upl + o.upl, day: s.day + (o.day || 0) }), { mv: 0, cost: 0, upl: 0, day: 0 });
+  const totCells = s => `<td class="num ${cls(s.day)}">${s.day ? money(s.day, { sign: true }) : ""}</td>
+    <td class="num">${money(s.mv)}</td>
+    <td class="num ${cls(s.upl)}">${money(s.upl, { sign: true })}</td>
+    <td class="num ${cls(s.cost ? s.upl / s.cost : 0)}">${pct(s.cost ? s.upl / s.cost : 0)}</td>`;
+  const row = o => {
+    const pdot = o.status === "live" ? "live" : "manual";
+    const mult = multFor(o.asset);
+    const multTag = (mult !== 1 && o.status === "live" && metaFor(o.asset).src !== "manual") ? ` <span class="muted" style="font-size:.7rem" title="${metaFor(o.asset).sym} × ${mult}">×${mult}</span>` : "";
+    return `<tr>
+      <td>${assetCell(o)}</td>
+      <td class="num">${fmtQty(o.qty)}</td>
+      <td class="num muted">${fmtPrice(o.avg)}</td>
+      <td class="num"><span class="price-tag"><span class="pdot ${pdot}"></span>${fmtPrice(o.price)}${multTag}</span></td>
+      <td class="num">${(o.status === "live" && o.changePct != null && o.day) ? `<span class="${cls(o.day)}">${money(o.day, { sign: true })}</span> <span class="muted" style="font-size:.72rem">${pct(o.changePct / 100)}</span>` : `<span class="muted">—</span>`}</td>
+      <td class="num">${money(o.mv)}</td>
+      <td class="num ${cls(o.upl)}">${money(o.upl, { sign: true })}</td>
+      <td class="num ${cls(o.ret)}">${pct(o.ret)}</td>
+    </tr>`;
+  };
+  const T = sum(P.open);
+  cont.innerHTML = `<div class="panel-head"><h2>Positions <span class="tag">${P.open.length}</span></h2>
+      <div class="muted num">${money(T.mv)} · <span class="${cls(T.upl)}">${money(T.upl, { sign: true })}</span></div></div>
+    <div class="table-scroll"><table class="tbl tbl-fit tbl-pos">
+      <thead><tr>${sortableHead(cols, VIEW.holdSort, "hold")}</tr></thead>
+      ${groups.map(g => `<tbody>
+        <tr class="grp-row"><td><span class="gdot" style="background:${g.color}"></span>${g.title}<span class="gn">${g.rows.length}</span></td>${"<td></td>".repeat(7)}</tr>
+        ${sortRows(g.rows, VIEW.holdSort).map(row).join("")}
+        ${groups.length > 1 ? `<tr class="sub-row"><td>Subtotal</td><td></td><td></td><td></td>${totCells(sum(g.rows))}</tr>` : ""}
+      </tbody>`).join("")}
+      <tfoot><tr><td>Total</td><td></td><td></td><td></td>${totCells(T)}</tr></tfoot>
+    </table></div>`;
 }
 
 function renderClosed(P) {
@@ -2228,6 +2255,11 @@ function wireHeader() {
     const we = e.target.closest("[data-waledit]"); if (we) return walletModal(+we.dataset.waledit);
     const wd = e.target.closest("[data-waldel]"); if (wd) return deleteWallet(+wd.dataset.waldel);
   });
+  // onglets du bas : le dernier ouvert est mémorisé sur cet appareil
+  $$(".tab-bar [data-tab]").forEach(b => b.onclick = () => setTab(b.dataset.tab));
+  let lastTab = null; try { lastTab = localStorage.getItem("wealth_tab"); } catch (e) {}
+  setTab(lastTab || "positions");
+  watchChartSize();
 }
 
 let booted = false;

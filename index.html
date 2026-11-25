@@ -4,114 +4,132 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <meta name="theme-color" content="#131722">
+  <meta name="color-scheme" content="dark">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
   <meta name="robots" content="noindex, nofollow">
   <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
   <meta http-equiv="Pragma" content="no-cache">
   <meta http-equiv="Expires" content="0">
   <title>Wealth</title>
-  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>💎</text></svg>">
-  <link rel="stylesheet" href="styles.css?v=48">
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='6' fill='%232962ff'/><path d='M6 22l6-7 5 4 9-10' fill='none' stroke='white' stroke-width='3' stroke-linecap='round' stroke-linejoin='round'/></svg>">
+  <link rel="stylesheet" href="styles.css?v=49">
 </head>
 <body>
 
   <!-- Passcode gate -->
   <div id="gate">
     <div class="gate-card">
-      <div class="gate-logo">💎</div>
+      <div class="gate-logo"><svg viewBox="0 0 32 32"><path d="M6 22l6-7 5 4 9-10" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/></svg></div>
       <h1 id="gateTitle">Enter passcode</h1>
       <p id="gateSub">Welcome back.</p>
       <input id="gateInput" type="password" inputmode="numeric" autocomplete="off" placeholder="••••••">
       <div class="gate-err" id="gateErr"></div>
-      <button class="btn primary" id="gateBtn" style="width:100%;justify-content:center;margin-top:16px">Unlock</button>
+      <button class="btn primary block" id="gateBtn">Unlock</button>
       <div class="gate-hint">Client-side lock. With a published vault, this password also fetches your encrypted data on any device.</div>
     </div>
   </div>
 
   <!-- App -->
   <div id="app" class="hidden">
-    <header class="top">
+    <header class="topbar">
       <div class="brand">
-        <div class="mark">💎</div>
-        <div><div class="title">Wealth</div><div class="sub">live portfolio &amp; P&amp;L</div></div>
+        <span class="mark"><svg viewBox="0 0 32 32"><path d="M6 22l6-7 5 4 9-10" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/></svg></span>
+        <span class="title">Wealth</span>
       </div>
+      <div class="status-line" id="statusLine"><span class="dot"></span> Loading…</div>
       <div class="controls">
         <div class="seg" id="ccyToggle">
           <button data-ccy="USD" class="active">USD</button>
           <button data-ccy="EUR">EUR</button>
         </div>
+        <span class="sep"></span>
         <button class="btn icon" id="refreshBtn" title="Refresh live prices"></button>
-        <button class="btn primary" id="addBtn"></button>
-        <button class="btn" id="syncBtn" title="Hard refresh — re-pull everything from GitHub"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:15px;height:15px"><path d="M12 3v12"/><path d="m7 10 5 5 5-5"/><path d="M4 21h16"/></svg> Sync</button>
-        <button class="btn" id="printBtn" title="Print / Save as PDF"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:15px;height:15px"><path d="M6 9V3h12v6"/><rect x="4" y="9" width="16" height="7" rx="2"/><path d="M8 16h8v5H8z"/></svg> PDF</button>
+        <button class="btn icon-lbl" id="syncBtn" title="Hard refresh — re-pull everything from GitHub"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 3v12"/><path d="m7 10 5 5 5-5"/><path d="M4 21h16"/></svg><span class="lbl">Sync</span></button>
+        <button class="btn icon-lbl hide-sm" id="printBtn" title="Print / Save as PDF"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9V3h12v6"/><rect x="4" y="9" width="16" height="7" rx="2"/><path d="M8 16h8v5H8z"/></svg><span class="lbl">PDF</span></button>
         <button class="btn icon" id="settingsBtn" title="Settings"></button>
         <button class="btn icon" id="lockBtn" title="Lock"></button>
+        <button class="btn primary icon-lbl" id="addBtn" title="Add trade"></button>
       </div>
-      <div class="status-line" id="statusLine"><span class="dot"></span> Loading…</div>
     </header>
 
     <main class="wrap">
       <div id="printHead" class="print-only"></div>
-      <section class="hero-grid">
-        <div class="panel hero-card" id="heroCard"></div>
-        <div class="panel hero-chart" id="sparkPanel">
-          <div class="spark-wrap">
-            <div class="spark-meta" id="sparkMeta"></div>
-            <div id="sparkSvg"></div>
+
+      <div class="layout">
+        <!-- valeur totale + courbe -->
+        <section class="panel chart-panel" id="sparkPanel">
+          <div class="chart-head">
+            <div id="heroCard"></div>
+            <div id="sparkMeta"></div>
           </div>
-        </div>
-      </section>
+          <div id="sparkSvg"></div>
+        </section>
 
-      <section class="stats" id="stats"></section>
-      <section class="classes" id="classCards"></section>
-      <div id="movers"></div>
+        <!-- indicateurs -->
+        <section class="kpis" id="stats"></section>
 
-      <div class="grid-2">
-        <div class="panel">
-          <div class="panel-head"><h2>Allocation</h2></div>
-          <div id="donut"></div>
-          <div class="alloc-bars" id="allocBars" style="margin-top:18px"></div>
-        </div>
-        <section class="panel" id="cashPanel"></section>
-      </div>
+        <!-- colonne latérale : movers, watchlist, allocation -->
+        <aside class="side">
+          <div id="movers"></div>
+          <section class="panel watch-panel" id="watchPanel"></section>
+          <section class="panel alloc-panel">
+            <div class="panel-head"><h2>Allocation</h2></div>
+            <div id="donut"></div>
+            <div id="allocBars"></div>
+          </section>
+        </aside>
 
-      <div class="grid-2 even">
-        <section class="panel" id="savingsPanel"></section>
-        <section class="panel" id="walletsPanel"></section>
-      </div>
+        <!-- détails en onglets -->
+        <section class="panel tabs-panel">
+          <div class="tab-bar" role="tablist">
+            <button data-tab="positions" role="tab">Positions <span class="tab-n" data-n="positions"></span></button>
+            <button data-tab="realized" role="tab">Realized P&amp;L <span class="tab-n" data-n="realized"></span></button>
+            <button data-tab="trades" role="tab">Trades <span class="tab-n" data-n="trades"></span></button>
+            <button data-tab="cash" role="tab">Cash <span class="tab-n" data-n="cash"></span></button>
+            <button data-tab="savings" role="tab">Savings <span class="tab-n" data-n="savings"></span></button>
+            <button data-tab="wallets" role="tab">Wallets <span class="tab-n" data-n="wallets"></span></button>
+          </div>
 
-      <div id="holdings"></div>
+          <div class="tab-pane" data-pane="positions"><div id="holdings"></div></div>
 
-      <div class="panel">
-        <div class="panel-head"><h2>Realized P&amp;L <span class="tag">closed &amp; trimmed</span></h2></div>
-        <div class="table-scroll"><table class="tbl">
-          <thead><tr id="closedHead"></tr></thead>
-          <tbody id="closedBody"></tbody>
-          <tfoot id="closedFoot"></tfoot>
-        </table></div>
-      </div>
+          <div class="tab-pane" data-pane="realized">
+            <div class="panel-head"><h2>Realized P&amp;L <span class="tag">closed &amp; trimmed</span></h2></div>
+            <div class="table-scroll"><table class="tbl tbl-fit tbl-real">
+              <thead><tr id="closedHead"></tr></thead>
+              <tbody id="closedBody"></tbody>
+              <tfoot id="closedFoot"></tfoot>
+            </table></div>
+          </div>
 
-      <div class="panel">
-        <div class="panel-head"><h2>Trade log <span class="tag"><span id="logCount">0</span> trades</span></h2>
-          <div style="display:flex;gap:8px">
-            <button class="btn" id="execBtn" title="Compare each fill to that day's close & range">⚖ Exec quality</button>
-            <button class="btn" id="csvBtn" title="Export trades, cash & balances as CSV">⬇ Export CSV</button>
-            <button class="btn" id="addBtn3">+ Add trade</button>
-          </div></div>
-        <div class="table-scroll"><table class="tbl">
-          <thead><tr>
-            <th class="no-sort">Date</th>
-            <th class="no-sort" style="text-align:left">Asset</th>
-            <th class="no-sort" style="text-align:left">Side</th>
-            <th class="no-sort" style="text-align:left">Venue</th>
-            <th class="no-sort">Qty</th>
-            <th class="no-sort">Price</th>
-            <th class="no-sort">Fee</th>
-            <th class="no-sort">Total (USD)</th>
-            <th class="no-sort">vs Close</th>
-            <th class="no-sort"></th>
-          </tr></thead>
-          <tbody id="logBody"></tbody>
-        </table></div>
+          <div class="tab-pane" data-pane="trades">
+            <div class="panel-head"><h2>Trade log <span class="tag"><span id="logCount">0</span> trades</span></h2>
+              <div class="head-actions">
+                <button class="btn" id="execBtn" title="Compare each fill to that day's close &amp; range">⚖ Exec quality</button>
+                <button class="btn" id="csvBtn" title="Export trades, cash &amp; balances as CSV">⬇ Export CSV</button>
+                <button class="btn primary" id="addBtn3">+ Add trade</button>
+              </div></div>
+            <div class="table-scroll"><table class="tbl">
+              <thead><tr>
+                <th class="no-sort">Date</th>
+                <th class="no-sort l">Asset</th>
+                <th class="no-sort l">Side</th>
+                <th class="no-sort l">Venue</th>
+                <th class="no-sort">Qty</th>
+                <th class="no-sort">Price</th>
+                <th class="no-sort">Fee</th>
+                <th class="no-sort">Total (USD)</th>
+                <th class="no-sort">vs Close</th>
+                <th class="no-sort"></th>
+              </tr></thead>
+              <tbody id="logBody"></tbody>
+            </table></div>
+          </div>
+
+          <div class="tab-pane" data-pane="cash"><section id="cashPanel"></section></div>
+          <div class="tab-pane" data-pane="savings"><section id="savingsPanel"></section></div>
+          <div class="tab-pane" data-pane="wallets"><section id="walletsPanel"></section></div>
+        </section>
       </div>
 
       <footer class="foot">
@@ -122,7 +140,7 @@
   </div>
 
   <script src="data.js"></script>
-  <script src="app.js?v=48"></script>
+  <script src="app.js?v=49"></script>
   <script>
     // inject header icons after app.js defines ICON
     window.addEventListener("DOMContentLoaded", () => {
@@ -130,7 +148,7 @@
         if (typeof ICON === "undefined") return setTimeout(set, 30);
         const put = (id, html) => { const n = document.getElementById(id); if (n) n.innerHTML = html; };
         put("refreshBtn", ICON.refresh);
-        put("addBtn", ICON.plus + " Add trade");
+        put("addBtn", ICON.plus + '<span class="lbl">Add trade</span>');
         put("settingsBtn", ICON.gear);
         put("lockBtn", ICON.lock);
       };
