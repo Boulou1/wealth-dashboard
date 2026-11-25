@@ -1232,10 +1232,7 @@ function renderSparkline() {
   }
   const first = pts[0].v, last = pts.at(-1).v, delta = last - first, up = delta >= 0;
   const col = up ? "var(--pos)" : "var(--neg)";
-  const realPts = pts.filter(p => p.real);
-  const dots = (realPts.length > 40 ? [] : realPts).map(p =>   // au-delà de 40 points, les ronds ne font que du bruit
-    `<circle cx="${X(p.t).toFixed(1)}" cy="${Y(p.v).toFixed(1)}" r="2.8" fill="var(--bg-2)" stroke="${col}" stroke-width="1.6"></circle>`).join("");
-  const grid = [0.25, 0.5, 0.75].map(f => `<line x1="0" x2="${W}" y1="${(H * f).toFixed(1)}" y2="${(H * f).toFixed(1)}" stroke="rgba(255,255,255,.05)"></line>`).join("");
+  const grid = [0.25, 0.5, 0.75].map(f => `<line x1="0" x2="${W}" y1="${(H * f).toFixed(1)}" y2="${(H * f).toFixed(1)}" stroke="#2a2e39" stroke-width="1" vector-effect="non-scaling-stroke"></line>`).join("");
   const segBtns = ["3M", "1Y", "ALL"].map(r => `<button data-range="${r}" class="${r === range ? "active" : ""}">${r === "ALL" ? "All" : r}</button>`).join("");
   const fmtD = t => new Date(t).toISOString().slice(0, 10);
   // axe des dates : 5 graduations régulières, libellés en HTML (le SVG est étiré, du texte y serait déformé)
@@ -1243,7 +1240,7 @@ function renderSparkline() {
   const fmtTick = t => new Date(t).toLocaleDateString("en-GB", longSpan
     ? { month: "short", year: "2-digit", timeZone: "UTC" } : { day: "numeric", month: "short", timeZone: "UTC" });
   const ticks = [0, 0.25, 0.5, 0.75, 1].map(f => ({ f, t: pts[0].t + f * span }));
-  const tickLines = ticks.slice(1, -1).map(k => `<line x1="${(k.f * W).toFixed(1)}" x2="${(k.f * W).toFixed(1)}" y1="0" y2="${H}" stroke="rgba(255,255,255,.04)"></line>`).join("");
+  const tickLines = ticks.slice(1, -1).map(k => `<line x1="${(k.f * W).toFixed(1)}" x2="${(k.f * W).toFixed(1)}" y1="0" y2="${H}" stroke="#2a2e39" stroke-width="1" vector-effect="non-scaling-stroke"></line>`).join("");
   const axis = `<div class="spark-axis">${ticks.map(k =>
     `<span style="left:${(k.f * 100).toFixed(2)}%;transform:translateX(${k.f === 0 ? "0" : k.f === 1 ? "-100%" : "-50%"})">${fmtTick(k.t)}</span>`).join("")}</div>`;
 
@@ -1257,14 +1254,13 @@ function renderSparkline() {
   $("#sparkSvg").innerHTML = `
     <svg id="sparkSvgEl" width="100%" height="${H}" viewBox="0 0 ${W} ${H}" preserveAspectRatio="none">
       <defs><linearGradient id="sg" x1="0" x2="0" y1="0" y2="1">
-        <stop offset="0" stop-color="${col}" stop-opacity="0.32"/>
+        <stop offset="0" stop-color="${col}" stop-opacity="0.28"/>
         <stop offset="1" stop-color="${col}" stop-opacity="0"/>
       </linearGradient></defs>
       ${grid}${tickLines}
       <path d="${d} L${W},${H} L0,${H} Z" fill="url(#sg)"></path>
-      <path d="${d}" fill="none" stroke="${col}" stroke-width="2.2" stroke-linejoin="round" stroke-linecap="round"></path>
-      ${dots}
-      <line id="sparkX" y1="0" y2="${H}" stroke="rgba(255,255,255,.22)" stroke-dasharray="3 3" visibility="hidden"></line>
+      <path d="${d}" fill="none" stroke="${col}" stroke-width="2" stroke-linejoin="round" stroke-linecap="round" vector-effect="non-scaling-stroke"></path>
+      <line id="sparkX" y1="0" y2="${H}" stroke="#9598a1" stroke-dasharray="4 4" vector-effect="non-scaling-stroke" visibility="hidden"></line>
     </svg>
     ${axis}
     <div id="sparkTip" class="spark-tip hidden"></div>`;

@@ -2,31 +2,31 @@
    Wealth Dashboard — dark, glassy, modern
    =========================================================================== */
 :root {
-  --bg:            #070a0e;
-  --bg-2:          #0b0f15;
-  --surface:       rgba(255, 255, 255, 0.035);
-  --surface-2:     rgba(255, 255, 255, 0.055);
-  --surface-hi:    rgba(255, 255, 255, 0.09);
-  --border:        rgba(255, 255, 255, 0.07);
-  --border-hi:     rgba(255, 255, 255, 0.16);
-  --text:          #e8eaf0;
-  --muted:         #9aa1ad;
-  --faint:         #6b7280;
-  --pos:           #2fe6b0;
-  --pos-dim:       rgba(52, 211, 153, 0.14);
-  --neg:           #f87171;
-  --neg-dim:       rgba(248, 113, 113, 0.14);
-  --accent:        #a78bfa;
-  --accent-2:      #34d399;
-  --stock:         #60a5fa;
-  --crypto:        #fbbf24;
-  --cash:          #2dd4bf;
-  --savings:       #818cf8;
-  --wallet:        #f472b6;
-  --shadow:        0 12px 40px rgba(0, 0, 0, 0.45);
-  --radius:        18px;
-  --radius-sm:     11px;
-  --font: "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  --bg:            #0f1115;
+  --bg-2:          #131722;
+  --surface:       #131722;
+  --surface-2:     #1e222d;
+  --surface-hi:    #2a2e39;
+  --border:        #2a2e39;
+  --border-hi:     #363a45;
+  --text:          #d1d4dc;
+  --muted:         #868993;
+  --faint:         #5d606b;
+  --pos:           #089981;
+  --pos-dim:       rgba(8, 153, 129, 0.16);
+  --neg:           #f23645;
+  --neg-dim:       rgba(242, 54, 69, 0.16);
+  --accent:        #2962ff;
+  --accent-2:      #1e53e5;
+  --stock:         #2962ff;
+  --crypto:        #ff9800;
+  --cash:          #00bcd4;
+  --savings:       #7e57c2;
+  --wallet:        #e91e63;
+  --shadow:        0 8px 24px rgba(0, 0, 0, 0.5);
+  --radius:        4px;
+  --radius-sm:     3px;
+  --font: -apple-system, BlinkMacSystemFont, "Trebuchet MS", Roboto, Ubuntu, sans-serif;
   --mono: "SF Mono", ui-monospace, "JetBrains Mono", "Menlo", monospace;
 }
 
@@ -423,4 +423,89 @@ footer.foot a { color: var(--muted); }
   background: linear-gradient(135deg, rgba(167,139,250,.18), rgba(52,211,153,.12));
   border: 1px solid var(--border-hi); border-radius: 12px;
   padding: 12px 16px; margin-top: 18px; font-size: .86rem;
+}
+
+/* ===========================================================================
+   Thème « terminal » façon TradingView : aplats, coins carrés, densité.
+   Écran uniquement, pour ne pas toucher à la version imprimée.
+   =========================================================================== */
+@media screen {
+  body { background: var(--bg); background-image: none; line-height: 1.4; font-size: 14px; }
+  .num, table.tbl td, .tile .val, .hero-card .val, .cash-chip .cv, .sav-val { font-variant-numeric: tabular-nums; }
+
+  /* barre du haut : bandeau plein comme la toolbar TV */
+  header.top { background: var(--bg-2); backdrop-filter: none; padding: 8px clamp(12px, 2vw, 20px); gap: 10px; }
+  .brand .mark, .gate-logo { background: var(--accent); box-shadow: none; border-radius: 4px; width: 30px; height: 30px; font-size: 15px; }
+  .brand .title { font-size: .95rem; font-weight: 700; letter-spacing: 0; }
+  .brand .sub { font-size: .68rem; color: var(--faint); }
+  .status-line { font-size: .7rem; }
+  .dot { border-radius: 50%; }
+  .dot.live { box-shadow: none; }
+
+  .btn { border-radius: 4px; padding: 6px 11px; font-size: .78rem; font-weight: 500; background: transparent; border-color: var(--border); transition: background .1s; }
+  .btn:hover { background: var(--surface-2); border-color: var(--border-hi); }
+  .btn.primary { background: var(--accent); border-color: var(--accent); box-shadow: none; }
+  .btn.primary:hover { background: var(--accent-2); filter: none; }
+  .btn.icon { padding: 6px 8px; }
+  .seg { border-radius: 4px; padding: 2px; background: var(--bg); }
+  .seg button { border-radius: 3px; padding: 4px 10px; font-size: .76rem; }
+  .seg button.active { background: var(--surface-hi); box-shadow: none; color: #fff; }
+
+  .wrap { max-width: 1440px; padding: 12px clamp(10px, 2vw, 20px) 60px; }
+
+  /* panneaux et tuiles : aplats bordés, sans ombre ni dégradé */
+  .panel, .tile, .sav-card, .cash-chip, .computed, .modal, .gate-card { border-radius: var(--radius); box-shadow: none; backdrop-filter: none; }
+  .panel { background: var(--surface); padding: 12px 14px; margin-top: 8px; }
+  .panel-head { margin-bottom: 10px; padding-bottom: 8px; border-bottom: 1px solid var(--border); }
+  .panel h2 { font-size: .8rem; font-weight: 600; text-transform: uppercase; letter-spacing: .06em; color: var(--text); }
+  .panel h2 .tag { border-radius: 2px; background: var(--surface-2); text-transform: none; letter-spacing: 0; }
+  .hero-grid, .grid-2 { gap: 8px; margin-top: 8px; }
+  .stats, .classes { gap: 8px; margin-top: 8px; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); }
+  .tile { background: var(--surface); padding: 10px 12px; border-radius: var(--radius); }
+  .tile .val { font-size: 1.15rem; font-weight: 600; letter-spacing: 0; }
+  .hero-card .label, .tile .label, .movers .label { font-size: .66rem; letter-spacing: .08em; font-weight: 600; color: var(--muted); }
+  .hero-card { background: var(--surface); }
+  .hero-card .val { background: none; -webkit-text-fill-color: #fff; color: #fff; font-weight: 600; letter-spacing: -.01em; }
+  .class-tile { border-left-width: 2px; }
+  .class-tile .dot-c { border-radius: 1px; }
+
+  /* puces : rectangles nets, plus de pilules */
+  .chip, .badge-side, .mini-tag, .cash-tx .k { border-radius: 2px; font-weight: 600; }
+  .mover { border-radius: 2px; padding: 3px 8px; font-size: .76rem; background: var(--bg); }
+  .mover.pos { border-color: rgba(8,153,129,.45); }
+  .mover.neg { border-color: rgba(242,54,69,.45); }
+  .comp-bar, .alloc-bar .track, .alloc-bar .fill { border-radius: 1px; }
+  .comp-bar { height: 8px; }
+  .alloc-bar .track { height: 5px; }
+  .comp-legend .sw, .legend .sw { border-radius: 1px; }
+  .conc-note, .sync-banner { border-radius: var(--radius); }
+  .sync-banner { background: rgba(41,98,255,.12); border-color: rgba(41,98,255,.4); }
+
+  /* graphique net worth */
+  .spark-axis { border-top-color: var(--border); }
+  .spark-axis span { font-size: .64rem; color: var(--muted); }
+  .spark-tip { background: var(--surface-2); border-color: var(--border-hi); border-radius: 2px; }
+
+  /* tableaux : lignes serrées, en-têtes discrets, survol bleuté */
+  table.tbl { font-size: .8rem; }
+  table.tbl th { font-size: .66rem; font-weight: 500; padding: 6px 10px; letter-spacing: .04em; color: var(--muted); background: var(--surface); }
+  table.tbl td { padding: 6px 10px; border-bottom: 1px solid var(--border); }
+  table.tbl th:first-child, table.tbl td:first-child { background: var(--surface); }
+  table.tbl tbody tr:hover, table.tbl tbody tr:hover td { background: var(--surface-2); }
+  table.tbl tfoot td { border-top-color: var(--border-hi); }
+  .asset-badge { width: 30px; height: 22px; border-radius: 2px; font-size: .58rem; letter-spacing: 0; }
+  .asset-badge.crypto { background: rgba(255,152,0,.16); }
+  .asset-badge.stock { background: rgba(41,98,255,.18); color: #5b8cff; }
+  .row-actions button, .cash-del { border-radius: 2px; }
+
+  /* modales et formulaires */
+  .modal-back { backdrop-filter: none; background: rgba(0,0,0,.7); }
+  .modal { background: var(--bg-2); }
+  .field input, .field select, .gate-card input { border-radius: 3px; background: var(--bg); border-color: var(--border-hi); }
+  .field input:focus, .field select:focus, .gate-card input:focus { border-color: var(--accent); }
+  #gate { background: var(--bg); }
+  .gate-card { background: var(--surface); }
+  .toast { border-radius: var(--radius); background: var(--surface-2); }
+  .sav-card, .cash-chip { background: var(--bg); }
+  .sav-val, .cash-chip .cv { font-weight: 600; letter-spacing: 0; }
 }
