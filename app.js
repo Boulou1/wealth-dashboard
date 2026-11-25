@@ -755,14 +755,29 @@ function renderKPIs(P) {
   const totalPL = t.upl + t.realizedAll + walPnl;
   const dayPct = (t.mv - t.day) ? t.day / (t.mv - t.day) : 0;
 
-  /* ---- en-tête du graphique : valeur totale, variation du jour, P&L cumulé ---- */
+  /* ---- en-tête du graphique : bascule valeur totale / P&L (réalisé + latent) ---- */
+  const pnlView = VIEW.chartMode === "pnl", ru = t.upl + t.realizedAll;
   $("#heroCard").innerHTML = `
-    <div class="hv-label">Total value <span class="pdot live"></span></div>
+    <div class="seg seg-mini hv-mode" id="chartMode">
+      <button data-mode="value" class="${pnlView ? "" : "active"}">Total value</button>
+      <button data-mode="pnl" class="${pnlView ? "active" : ""}">Total P&amp;L</button>
+    </div>` + (pnlView ? `
+    <div class="hv-val ${cls(ru)}">${money(ru, { sign: true })}</div>
+    <div class="hv-chg num">
+      <span class="${cls(t.realizedAll)}">${money(t.realizedAll, { sign: true })}<span class="k">realized</span></span>
+      <span class="${cls(t.upl)}">${money(t.upl, { sign: true })}<span class="k">unrealized</span></span>
+      ${walPnl ? `<span class="muted hv-note">wallet P&amp;L not included</span>` : ""}
+    </div>` : `
     <div class="hv-val">${money(totalValue)}</div>
     <div class="hv-chg num">
       ${t.day ? `<span class="${cls(t.day)}">${money(t.day, { sign: true })} (${pct(dayPct)})<span class="k">today</span></span>` : `<span class="muted">No live move yet</span>`}
       <span class="${cls(totalPL)}">${money(totalPL, { sign: true })}<span class="k">all-time P&amp;L</span></span>
-    </div>`;
+    </div>`);
+  $$("#chartMode button").forEach(b => b.onclick = () => {
+    VIEW.chartMode = b.dataset.mode;
+    try { localStorage.setItem("wealth_chart", VIEW.chartMode); } catch (e) {}
+    render();
+  });
 
   /* ---- bande d'indicateurs ---- */
   const cells = [];
@@ -785,22 +800,6 @@ function renderKPIs(P) {
   const box = $("#stats");
   box.style.setProperty("--n", cells.length);
   box.innerHTML = cells.join("");
-
-  /* ---- today's movers ---- */
-  // positions détenues uniquement (les mouvements < 0,50 $ sont ignorés), classées par variation du jour :
-  // les 3 meilleures puis les 3 pires, sans doublon quand il y a moins de 6 lignes ; deux colonnes alignées
-  const mv = P.open.filter(o => o.status === "live" && o.changePct != null && o.qty > EPS && Math.abs(o.day) >= 0.5)
-    .sort((a, b) => b.changePct - a.changePct);
-  const ups = mv.slice(0, 3);
-  const dns = mv.slice(Math.max(ups.length, mv.length - 3)).reverse();
-  const mbox = $("#movers");
-  if (!mv.length) { mbox.innerHTML = ""; return; }
-  const row = o => `<div class="mv-row"><span class="tk" title="${o.asset}">${initials(o.asset)}</span>`
-    + `<span class="pc num ${cls(o.day)}">${pct(o.changePct / 100)}</span><span class="am num">${money(o.day, { sign: true })}</span></div>`;
-  mbox.innerHTML = `<section class="panel movers"><div class="panel-head"><h2>Today's movers</h2></div><div class="mv-cols">`
-    + `<div class="mv-col"><div class="mv-h">Top 3</div>${ups.map(row).join("")}</div>`
-    + (dns.length ? `<div class="mv-col"><div class="mv-h">Bottom 3</div>${dns.map(row).join("")}</div>` : "")
-    + `</div></section>`;
 }
 
 /* ============================ Wallets panel ============================ */
@@ -1081,8 +1080,8 @@ function renderAllocation(P) {
   const ST = savingsTotals(), WT = walletTotals();
   const sav = Math.max(ST.usd, 0), wal = Math.max(WT.usd, 0);
   const tot = stk + cry + cash + sav + wal;
-  const box = $("#donut"), note = $("#allocBars");
-  if (!tot) { box.innerHTML = `<div class="empty">Nothing to show yet — add a trade or some cash.</div>`; note.innerHTML = ""; return; }
+  const box = $("#donut");
+  if (!tot) { box.innerHTML = `<div class="empty">Nothing to show yet — add a trade or some cash.</div>`; return; }
 
   // barre de composition + une ligne par classe d'actifs (poids, valeur, P&L latent)
   const nStk = P.open.filter(o => o.cls === "stock").length, nCry = P.open.filter(o => o.cls === "crypto").length;
@@ -1104,21 +1103,20 @@ function renderAllocation(P) {
       <span class="nm"><b>${s.nm}</b><small>${s.sub}</small></span>
       <span class="pc num">${w(s.v)}</span><span class="amt num">${money(s.v)}</span></div>`).join("")}
     <div class="al-row al-tot"><span></span><span class="nm"><b>Total</b></span><span></span><span class="amt num">${money(tot)}</span></div>`;
-
-  const top = [...P.open].sort((a, b) => b.mv - a.mv)[0];
-  note.innerHTML = (top && top.mv / tot > 0.35)
-    ? `<div class="conc-note">⚠︎ ${top.asset} is ${(top.mv / tot * 100).toFixed(0)}% of your wealth — concentrated.</div>` : "";
 }
 
 /* ============================ Watchlist (colonne latérale) ============================ */
-// toutes les positions ouvertes, triées par valeur : dernier cours, valeur, poids dans le patrimoine, variation du jour
+// toutes les positions ouvertes, de la plus forte hausse du jour à la plus forte baisse (vert → rouge) :
+// dernier cours, valeur, poids dans le patrimoine, variation du jour. Sans cours en direct (prix manuel) = 0 %,
+// donc entre les hausses et les baisses ; à variation égale, la plus grosse ligne d'abord.
 function renderWatchlist(P) {
   const box = $("#watchPanel"); if (!box) return;
-  const rows = [...P.open].sort((a, b) => b.mv - a.mv);
+  const chg = o => (o.status === "live" && o.changePct != null) ? o.changePct : 0;
+  const rows = [...P.open].sort((a, b) => chg(b) - chg(a) || b.mv - a.mv);
   if (!rows.length) { box.innerHTML = `<div class="panel-head"><h2>Watchlist</h2></div><div class="empty">No open positions yet.</div>`; return; }
   const tot = LIVE_TOTAL > 0 ? LIVE_TOTAL : P.totals.mv;
   box.innerHTML = `<div class="panel-head"><h2>Watchlist <span class="tag">${rows.length}</span></h2><span class="muted num">${money(P.totals.mv)}</span></div>
-    <div class="wl-cols"><span>Symbol</span><span>Value</span><span>Day</span></div>
+    <div class="wl-cols"><span>Symbol</span><span>Value</span><span>Day <span class="arr">▼</span></span></div>
     ${rows.map(o => {
       const live = o.status === "live" && o.changePct != null;
       return `<div class="wl-row">
@@ -1177,28 +1175,67 @@ function flushSnapshot() {
   if (SNAP_DIRTY && REMOTE_STATE === "synced" && typeof ghAutoBackup === "function") { SNAP_DIRTY = false; ghAutoBackup(); }
 }
 
-/* ============================ Courbe de valeur (style TradingView) ============================
-   Dessinée à la taille réelle du conteneur (texte net, pas d'étirement) : échelle de prix à droite,
-   dates en bas, étiquette du dernier point, réticule qui suit la courbe à la souris comme au doigt. */
+/* ============================ Courbe (style TradingView) ============================
+   Dessinée à la taille réelle du conteneur (texte net, pas d'étirement) : échelle à droite, dates en bas,
+   étiquette du dernier point, réticule qui suit la courbe à la souris comme au doigt.
+   Deux vues : valeur totale (aire bleue) ou P&L réalisé + latent (ligne de base à zéro, vert au-dessus, rouge en dessous). */
 const RANGES = { "1M": 31, "3M": 92, "6M": 183, "YTD": 0, "1Y": 366, "ALL": 0 };
 let CHART_W = 0;
+
+// P&L réalisé + latent à la date de chaque instantané : FIFO rejoué sur les trades jusqu'à cette date (même règle que
+// computePortfolio), latent = (actions + crypto de l'instantané) − coût restant. Seuls comptent les instantanés cohérents
+// avec le journal de trades (recalculés depuis les trades ou relevés automatiquement) : les relevés importés du tableur
+// d'origine valorisent des positions absentes du journal et afficheraient un faux gain.
+function pnlSeries(snaps) {
+  const T = STATE.trades;
+  const order = T.map((t, i) => i).sort((a, b) => T[a].date < T[b].date ? -1 : T[a].date > T[b].date ? 1 : a - b);
+  const lots = {}, out = [];
+  let realized = 0, k = 0;
+  for (const s of snaps) {
+    while (k < order.length && T[order[k]].date <= s.date) {
+      const t = T[order[k++]], q = Math.abs(t.qty);
+      if (!(q > 0)) continue;
+      const L = (lots[t.asset] = lots[t.asset] || []);
+      if (String(t.side).toLowerCase() === "buy") { L.push([q, Math.abs(t.totalUSD) / q]); continue; }
+      let rem = q, used = 0;
+      while (rem > EPS && L.length) {
+        const take = Math.min(rem, L[0][0]);
+        used += take * L[0][1]; L[0][0] -= take; rem -= take;
+        if (L[0][0] <= EPS) L.shift();
+      }
+      realized += Math.abs(t.totalUSD) - used;
+    }
+    if (!(s.auto || s.rebuilt) || s.stocks == null || s.crypto == null) continue;
+    let cost = 0;
+    for (const a in lots) for (const l of lots[a]) cost += l[0] * l[1];
+    out.push({ date: s.date, v: s.stocks + s.crypto - cost + realized });
+  }
+  return out;
+}
+
 function renderSparkline() {
   const host = $("#sparkSvg"), meta = $("#sparkMeta");
   if (!host || !meta) return;
-  const all = [...(STATE.snapshots || [])].filter(x => x.navUSD != null).sort((a, b) => a.date < b.date ? -1 : 1);
-  if (all.length < 2) { meta.innerHTML = ""; host.innerHTML = `<div class="empty">The net-worth curve starts after two daily snapshots.</div>`; return; }
+  const pnl = VIEW.chartMode === "pnl";
+  const snaps = [...(STATE.snapshots || [])].filter(x => x.navUSD != null).sort((a, b) => a.date < b.date ? -1 : 1);
+  const all = pnl ? pnlSeries(snaps) : snaps.map(x => ({ date: x.date, v: x.navUSD }));
+  if (all.length < 2) {
+    meta.innerHTML = "";
+    host.innerHTML = `<div class="empty">${pnl ? "The P&amp;L curve starts after two snapshots that match the trade log." : "The net-worth curve starts after two daily snapshots."}</div>`;
+    return;
+  }
   const DAY = 864e5, ts = x => new Date(x.date + "T00:00:00Z").getTime();
   const nowT = ts(all.at(-1)), t0 = ts(all[0]);
   let range = VIEW.sparkRange in RANGES ? VIEW.sparkRange : "1Y";
   const startOf = r => r === "ALL" ? t0 : r === "YTD" ? Date.UTC(new Date(nowT).getUTCFullYear(), 0, 1) : nowT - RANGES[r] * DAY;
   const startT = Math.max(t0, startOf(range));
-  let pts = all.filter(x => ts(x) >= startT).map(x => ({ t: ts(x), v: x.navUSD }));
+  let pts = all.filter(x => ts(x) >= startT).map(x => ({ t: ts(x), v: x.v }));
   if (pts.length && pts[0].t > startT) {                // point interpolé au bord de la fenêtre
     const i = all.findIndex(x => ts(x) >= startT);
     if (i > 0) { const a = all[i - 1], b = all[i], f = (startT - ts(a)) / (ts(b) - ts(a) || 1);
-      pts.unshift({ t: startT, v: a.navUSD + (b.navUSD - a.navUSD) * f }); }
+      pts.unshift({ t: startT, v: a.v + (b.v - a.v) * f }); }
   }
-  if (pts.length < 2 || pts.at(-1).t - pts[0].t < DAY) { range = "ALL"; VIEW.sparkRange = "ALL"; pts = all.map(x => ({ t: ts(x), v: x.navUSD })); }
+  if (pts.length < 2 || pts.at(-1).t - pts[0].t < DAY) { range = "ALL"; VIEW.sparkRange = "ALL"; pts = all.map(x => ({ t: ts(x), v: x.v })); }
 
   const W = Math.max(280, Math.round(host.clientWidth || 640)); CHART_W = W;
   const H = W < 600 ? 230 : W < 1000 ? 300 : 380;
@@ -1206,16 +1243,22 @@ function renderSparkline() {
   const span = (pts.at(-1).t - pts[0].t) || 1;
   const vals = pts.map(p => toCcy(p.v));                // échelle dans la devise affichée
   let lo = Math.min(...vals), hi = Math.max(...vals);
+  if (pnl) {                                            // garder le zéro en vue quand il est proche de la courbe
+    const sp = (hi - lo) || Math.abs(hi) || 1;
+    if (lo > 0 && lo <= sp) lo = 0;
+    if (hi < 0 && -hi <= sp) hi = 0;
+  }
   const padV = (hi - lo) * 0.1 || Math.abs(hi) * 0.02 || 1; lo -= padV; hi += padV;
   const nice = raw => { const mag = Math.pow(10, Math.floor(Math.log10(raw))), f = raw / mag; return (f <= 1 ? 1 : f <= 2 ? 2 : f <= 2.5 ? 2.5 : f <= 5 ? 5 : 10) * mag; };
   const step = nice((hi - lo) / Math.max(3, Math.min(8, Math.floor(ph / 52))));
-  const yTicks = []; for (let v = Math.ceil(lo / step) * step; v <= hi; v += step) yTicks.push(v);
+  const yTicks = []; for (let v = Math.ceil(lo / step) * step; v <= hi; v += step) yTicks.push(Math.abs(v) < step / 1e6 ? 0 : v);
   const X = t => (t - pts[0].t) / span * pw, Y = v => TOP + ph - (v - lo) / (hi - lo) * ph;
   const fmtAx = v => (v < 0 ? "-" : "") + SYM() + (Math.abs(v) >= 1e6 ? (Math.abs(v) / 1e6).toFixed(2) + "M" : Math.round(Math.abs(v)).toLocaleString("en-US"));
   const MON = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];   // « Sep », pas « Sept »
   const fmtDM = t => { const d = new Date(t); return `${d.getUTCDate()} ${MON[d.getUTCMonth()]}`; };
   const fmtD = t => `${fmtDM(t)} ${new Date(t).getUTCFullYear()}`;
   const f1 = v => v.toFixed(1);
+  const sgn = v => pnl ? (v >= 0 ? " up" : " dn") : "";   // couleur selon le signe, en vue P&L seulement
 
   // Interpolation cubique monotone (Fritsch-Carlson) : lissée mais sans dépassement entre deux points.
   const xs = pts.map(p => X(p.t)), ys = vals.map(Y), n = xs.length;
@@ -1243,8 +1286,7 @@ function renderSparkline() {
   const xTicks = [], maxX = Math.max(2, Math.floor(pw / 64)), endT = pts.at(-1).t;
   if (span <= 70 * DAY) {
     const sd = [1, 2, 3, 7, 14].find(s => span / (s * DAY) <= maxX) || 30;
-    for (let t = Math.ceil(pts[0].t / DAY) * DAY; t <= endT; t += sd * DAY)
-      xTicks.push({ t, lbl: fmtDM(t) });
+    for (let t = Math.ceil(pts[0].t / DAY) * DAY; t <= endT; t += sd * DAY) xTicks.push({ t, lbl: fmtDM(t) });
   } else {
     const sm = [1, 2, 3, 6, 12].find(s => span / (30.44 * DAY) / s <= maxX + 0.3) || 24;   // +0,3 : une fenêtre « 1Y » fait 366 jours
     const d0 = new Date(pts[0].t); let y = d0.getUTCFullYear(), mo = d0.getUTCMonth() + 1;
@@ -1261,18 +1303,33 @@ function renderSparkline() {
   const yLbl = yTicks.map(v => `<text class="ch-axis" x="${pw + 8}" y="${f1(Y(v) + 4)}">${fmtAx(v)}</text>`).join("");
   const xLbl = xTicks.filter(k => X(k.t) > 20 && X(k.t) < pw - 20)
     .map(k => `<text class="ch-axis" x="${f1(X(k.t))}" y="${H - 8}" text-anchor="middle">${k.lbl}</text>`).join("");
+  // aire : jusqu'au bas du graphique (valeur) ou jusqu'à la ligne du zéro (P&L), coupée en deux couleurs de part et d'autre
+  const y0 = pnl ? Math.min(TOP + ph, Math.max(TOP, Y(0))) : TOP + ph;
+  const area = `${d} L${f1(xs[n - 1])},${f1(y0)} L${f1(xs[0])},${f1(y0)} Z`;
+  const defs = pnl ? `
+      <linearGradient id="chGradUp" gradientUnits="userSpaceOnUse" x1="0" x2="0" y1="${TOP}" y2="${f1(y0)}"><stop offset="0" class="ch-up-0"/><stop offset="1" class="ch-up-1"/></linearGradient>
+      <linearGradient id="chGradDn" gradientUnits="userSpaceOnUse" x1="0" x2="0" y1="${f1(y0)}" y2="${TOP + ph}"><stop offset="0" class="ch-dn-1"/><stop offset="1" class="ch-dn-0"/></linearGradient>
+      <clipPath id="chUp"><rect x="0" y="0" width="${pw}" height="${f1(y0)}"/></clipPath>
+      <clipPath id="chDn"><rect x="0" y="${f1(y0)}" width="${pw}" height="${f1(H - y0)}"/></clipPath>`
+    : `<linearGradient id="chGrad" x1="0" x2="0" y1="0" y2="1"><stop offset="0" class="ch-stop-0"/><stop offset="1" class="ch-stop-1"/></linearGradient>`;
+  const series = pnl ? `
+      <path d="${area}" fill="url(#chGradUp)" clip-path="url(#chUp)"/>
+      <path d="${area}" fill="url(#chGradDn)" clip-path="url(#chDn)"/>
+      <line class="ch-zero" x1="0" x2="${pw}" y1="${f1(y0)}" y2="${f1(y0)}"/>
+      <path class="ch-line up" d="${d}" clip-path="url(#chUp)"/>
+      <path class="ch-line dn" d="${d}" clip-path="url(#chDn)"/>`
+    : `<path d="${area}" fill="url(#chGrad)"/><path class="ch-line" d="${d}"/>`;
   const lastV = vals.at(-1), ly = Y(lastV);
   host.innerHTML = `
     <svg viewBox="0 0 ${W} ${H}" width="${W}" height="${H}">
-      <defs><linearGradient id="chGrad" x1="0" x2="0" y1="0" y2="1"><stop offset="0" class="ch-stop-0"/><stop offset="1" class="ch-stop-1"/></linearGradient></defs>
+      <defs>${defs}</defs>
       ${gridY}${gridX}
       <line class="ch-frame" x1="${pw + 0.5}" x2="${pw + 0.5}" y1="0" y2="${H}"/>
       <line class="ch-frame" x1="0" x2="${W}" y1="${TOP + ph + 0.5}" y2="${TOP + ph + 0.5}"/>
-      <path d="${d} L${f1(xs[n - 1])},${TOP + ph} L${f1(xs[0])},${TOP + ph} Z" fill="url(#chGrad)"/>
-      <path class="ch-line" d="${d}"/>
-      <line class="ch-last" x1="0" x2="${pw}" y1="${f1(ly)}" y2="${f1(ly)}"/>
+      ${series}
+      <line class="ch-last${sgn(lastV)}" x1="0" x2="${pw}" y1="${f1(ly)}" y2="${f1(ly)}"/>
       ${yLbl}${xLbl}
-      <g class="ch-tag"><rect x="${pw + 1}" y="${f1(ly - 10)}" width="${AX - 2}" height="20" rx="2"/><text x="${pw + 8}" y="${f1(ly + 4)}">${fmtAx(lastV)}</text></g>
+      <g class="ch-tag${sgn(lastV)}"><rect x="${pw + 1}" y="${f1(ly - 10)}" width="${AX - 2}" height="20" rx="2"/><text x="${pw + 8}" y="${f1(ly + 4)}">${fmtAx(lastV)}</text></g>
       <g id="chCross" visibility="hidden">
         <line class="ch-cross" id="chCx" y1="${TOP}" y2="${TOP + ph}"/>
         <line class="ch-cross" id="chCy" x1="0" x2="${pw}"/>
@@ -1289,7 +1346,8 @@ function renderSparkline() {
     const r = svg.getBoundingClientRect();
     const px = Math.min(pw, Math.max(0, (e.clientX - r.left) * W / r.width));
     const py = yAt(px), v = lo + (TOP + ph - py) / ph * (hi - lo), cx = Math.min(pw - 48, Math.max(48, px));
-    set("#chCx", { x1: f1(px), x2: f1(px) }); set("#chCy", { y1: f1(py), y2: f1(py) }); set("#chDot", { cx: f1(px), cy: f1(py) });
+    set("#chCx", { x1: f1(px), x2: f1(px) }); set("#chCy", { y1: f1(py), y2: f1(py) });
+    set("#chDot", { cx: f1(px), cy: f1(py), class: "ch-dot" + sgn(v) });
     set("#chYr", { y: f1(py - 10) }); set("#chYt", { y: f1(py + 4) }, fmtAx(v));
     set("#chXr", { x: f1(cx - 48) }); set("#chXt", { x: f1(cx) }, fmtD(pts[0].t + px / pw * span));
     cross.setAttribute("visibility", "visible");
@@ -1300,10 +1358,12 @@ function renderSparkline() {
   svg.addEventListener("pointerleave", e => { if (e.pointerType === "mouse") hide(); });   // au doigt, la valeur reste affichée
   svg.addEventListener("pointercancel", hide);                                              // défilement vertical de la page
 
+  // variation sur la période ; en P&L, pas de pourcentage (le P&L peut être négatif ou proche de zéro)
   const firstUSD = pts[0].v, delta = pts.at(-1).v - firstUSD;
-  const since = range === "ALL" ? `since ${fmtD(pts[0].t)}` : range === "YTD" ? "year to date" : `past ${range}`;
+  const since = (range === "ALL" || startOf(range) < t0) ? `since ${fmtD(pts[0].t)}` : range === "YTD" ? "year to date" : `past ${range}`;
+  const chg = pnl ? money(delta, { sign: true }) : `${money(delta, { sign: true })} (${pct(firstUSD ? delta / firstUSD : 0)})`;
   meta.innerHTML = `<div class="seg seg-mini" id="sparkRange">${Object.keys(RANGES).map(r => `<button data-range="${r}" class="${r === range ? "active" : ""}">${r === "ALL" ? "All" : r}</button>`).join("")}</div>
-    <div class="range-chg num"><span class="${cls(delta)}">${money(delta, { sign: true })} (${pct(firstUSD ? delta / firstUSD : 0)})</span> <span class="muted">${since}</span></div>`;
+    <div class="range-chg num"><span class="${cls(delta)}">${chg}</span> <span class="muted">${since}</span></div>`;
   $$("#sparkRange button").forEach(b => b.onclick = () => { VIEW.sparkRange = b.dataset.range; renderSparkline(); });
 }
 function watchChartSize() {   // redessine la courbe quand la largeur de son conteneur change (rotation, fenêtre)
@@ -2259,6 +2319,7 @@ function wireHeader() {
   $$(".tab-bar [data-tab]").forEach(b => b.onclick = () => setTab(b.dataset.tab));
   let lastTab = null; try { lastTab = localStorage.getItem("wealth_tab"); } catch (e) {}
   setTab(lastTab || "positions");
+  try { VIEW.chartMode = localStorage.getItem("wealth_chart") === "pnl" ? "pnl" : "value"; } catch (e) {}
   watchChartSize();
 }
 

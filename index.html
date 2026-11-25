@@ -13,7 +13,7 @@
   <meta http-equiv="Expires" content="0">
   <title>Wealth</title>
   <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='6' fill='%232962ff'/><path d='M6 22l6-7 5 4 9-10' fill='none' stroke='white' stroke-width='3' stroke-linecap='round' stroke-linejoin='round'/></svg>">
-  <link rel="stylesheet" href="styles.css?v=49">
+  <link rel="stylesheet" href="styles.css?v=50">
 </head>
 <body>
 
@@ -69,14 +69,12 @@
         <!-- indicateurs -->
         <section class="kpis" id="stats"></section>
 
-        <!-- colonne latérale : movers, watchlist, allocation -->
+        <!-- colonne latérale : watchlist (vert → rouge), allocation -->
         <aside class="side">
-          <div id="movers"></div>
           <section class="panel watch-panel" id="watchPanel"></section>
           <section class="panel alloc-panel">
             <div class="panel-head"><h2>Allocation</h2></div>
             <div id="donut"></div>
-            <div id="allocBars"></div>
           </section>
         </aside>
 
@@ -140,7 +138,7 @@
   </div>
 
   <script src="data.js"></script>
-  <script src="app.js?v=49"></script>
+  <script src="app.js?v=50"></script>
   <script>
     // inject header icons after app.js defines ICON
     window.addEventListener("DOMContentLoaded", () => {
